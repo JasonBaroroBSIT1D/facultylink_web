@@ -1,24 +1,19 @@
 """FacultyLink web backend.
 
-Flask serves the Administrator and Reviewer pages and reads the SQLite
-database supplied with the project. Passwords stay as the hashes already
-stored in that file. Faculty rows, documents, notifications, KRA scores,
-and the audit log are the tables already in the database.
+Flask serves the Administrator and Reviewer pages from the PostgreSQL
+database used by the mobile app. The SQLite file was only the guide for
+those table names. New mobile uploads are read from this database.
 """
 
-import json
-import shutil
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import psycopg
 from flask import Flask, abort, jsonify, request, send_from_directory, session
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(__file__).resolve().parent / "data"
-DB_PATH = DATA_DIR / "facultylink.db"
-SOURCE_DB = Path(r"c:\Users\gumat\Downloads\facultylink.db")
 
 KRA_IDS = {
     "instruction": "kra1",
@@ -48,39 +43,45 @@ app.config.update(
 )
 
 
+def load_env():
+    values = {}
+    path = Path(__file__).resolve().parent / ".env"
+    if not path.is_file():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
 def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def columns(conn, table):
-    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+    settings = load_env()
+    return psycopg.connect(
+        host=settings.get("PGHOST", "localhost"),
+        port=int(settings.get("PGPORT", "5432")),
+        dbname=settings.get("PGDATABASE", "facultylink"),
+        user=settings.get("PGUSER", "postgres"),
+        password=settings.get("PGPASSWORD", ""),
+        row_factory=dict_row,
+    )
 
 
 def init_db():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not DB_PATH.exists():
-        if not SOURCE_DB.exists():
-            raise FileNotFoundError("facultylink.db was not found in Downloads.")
-        shutil.copy(SOURCE_DB, DB_PATH)
     conn = connect()
-    if "reviewer_user_id" not in columns(conn, "faculty_profiles"):
-        conn.execute("ALTER TABLE faculty_profiles ADD COLUMN reviewer_user_id INTEGER")
-    if "web_payload" not in columns(conn, "documents"):
-        conn.execute("ALTER TABLE documents ADD COLUMN web_payload TEXT")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_profiles (
-            user_id INTEGER PRIMARY KEY,
-            office TEXT,
-            contact TEXT,
-            specialization TEXT
+    required = {"users", "faculty_profiles", "documents", "notifications", "audit_logs"}
+    present = {
+        row["table_name"]
+        for row in conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
         )
-        """
-    )
-    conn.commit()
+    }
     conn.close()
+    missing = required - present
+    if missing:
+        raise RuntimeError("PostgreSQL is missing tables: " + ", ".join(sorted(missing)))
 
 
 def display_name(email, profile_name=None):
@@ -100,7 +101,7 @@ def session_row(conn):
     user_id = session.get("user_id")
     if not user_id:
         return None
-    return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return conn.execute("SELECT * FROM users WHERE id = %s", (user_id,)).fetchone()
 
 
 def require_user():
@@ -119,16 +120,11 @@ def json_error(message, status):
 
 
 def profile_for(conn, user_id):
-    return conn.execute("SELECT * FROM faculty_profiles WHERE user_id = ?", (user_id,)).fetchone()
-
-
-def web_profile(conn, user_id):
-    return conn.execute("SELECT * FROM web_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    return conn.execute("SELECT * FROM faculty_profiles WHERE user_id = %s", (user_id,)).fetchone()
 
 
 def public_user(conn, row):
     profile = profile_for(conn, row["id"])
-    extra = web_profile(conn, row["id"])
     name = display_name(row["email"], profile["full_name"] if profile else None)
     return {
         "id": str(row["id"]),
@@ -137,11 +133,11 @@ def public_user(conn, row):
         "role": web_role(row["role"]),
         "name": name,
         "title": "Faculty" if row["role"] == "faculty" else ("Institutional Reviewer" if row["role"] == "reviewer" else "Administrator"),
-        "office": (extra["office"] if extra and extra["office"] else (profile["department"] if profile else "")),
+        "office": profile["department"] if profile else "",
         "department": profile["department"] if profile else "",
         "employeeNo": profile["faculty_id"] if profile else row["email"],
-        "contact": (extra["contact"] if extra and extra["contact"] else (profile["phone"] if profile else "")),
-        "specialization": (extra["specialization"] if extra and extra["specialization"] else (profile["specialization"] if profile else "")),
+        "contact": profile["phone"] if profile else "",
+        "specialization": profile["specialization"] if profile else "",
     }
 
 
@@ -165,7 +161,7 @@ def faculty_records(conn):
     ).fetchall()
     fallback = sole_reviewer_id(conn)
     for row in rows:
-        reviewer_id = row["reviewer_user_id"] or fallback
+        reviewer_id = fallback
         people.append({
             "id": str(row["user_id"]),
             "employeeNo": row["faculty_id"],
@@ -186,16 +182,12 @@ def faculty_records(conn):
 
 
 def document_record(row):
-    extra = {}
-    if row["web_payload"]:
-        try:
-            extra = json.loads(row["web_payload"])
-        except json.JSONDecodeError:
-            extra = {}
     submitted = str(row["submitted_at"] or "")[:10]
     author = row["author"] or ""
     kra = row["kra"] or ""
-    info = row["extracted_info"] or ""
+    info = row["extracted_info"]
+    if not isinstance(info, str):
+        info = "" if info is None else str(info)
     text = row["extracted_text"] or row["validation_result"] or row["title"]
     record = {
         "id": row["public_id"],
@@ -205,14 +197,14 @@ def document_record(row):
         "fileType": "PDF",
         "fileSize": "On file",
         "pages": 1,
-        "indicatorId": extra.get("indicatorId") or KRA_INDICATORS.get(kra),
+        "indicatorId": KRA_INDICATORS.get(kra),
         "kraId": KRA_IDS.get(kra, ""),
-        "reviewerId": extra.get("reviewerId") or "",
+        "reviewerId": "",
         "dateSubmitted": submitted,
         "hash": row["file_hash"] or "",
         "status": STATUS_TO_WEB.get(row["status"], "pending-review"),
         "databasePoints": row["points"],
-        "contribution": extra.get("contribution") or [{"author": author or "Faculty", "percent": 100, "subject": True}],
+        "contribution": [{"author": author or "Faculty", "percent": 100, "subject": True}],
         "ocr": {
             "status": "completed",
             "confidence": 0.9,
@@ -222,7 +214,7 @@ def document_record(row):
             "content": " ".join(part for part in [text, info, kra] if part),
         },
         "feedback": row["reviewer_feedback"] or "",
-        "decidedAt": extra.get("decidedAt"),
+        "decidedAt": None,
     }
     return record
 
@@ -256,13 +248,10 @@ def audit_record(row):
 def visible_faculty_ids(conn, user):
     if user["role"] == "admin":
         return None
-    fallback = sole_reviewer_id(conn)
-    ids = []
-    for row in conn.execute("SELECT user_id, reviewer_user_id FROM faculty_profiles"):
-        assigned = row["reviewer_user_id"] or fallback
-        if assigned == user["id"]:
-            ids.append(row["user_id"])
-    return set(ids)
+    if sole_reviewer_id(conn) != user["id"] and user["role"] != "reviewer":
+        return set()
+    rows = conn.execute("SELECT user_id FROM faculty_profiles").fetchall()
+    return {row["user_id"] for row in rows}
 
 
 @app.errorhandler(401)
@@ -276,7 +265,7 @@ def login():
     identity = str(payload.get("identity") or "").strip().lower()
     password = str(payload.get("password") or "")
     conn = connect()
-    row = conn.execute("SELECT * FROM users WHERE lower(email) = ?", (identity,)).fetchone()
+    row = conn.execute("SELECT * FROM users WHERE lower(email) = %s", (identity,)).fetchone()
     if not row or not check_password_hash(row["password_hash"], password):
         conn.close()
         return json_error("The username or password is incorrect.", 401)
@@ -289,7 +278,7 @@ def login():
     session["user_id"] = row["id"]
     session["role"] = row["role"]
     conn.execute(
-        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (%s, %s, %s, %s)",
         (row["email"], "login", "Signed in to the FacultyLink web application.", datetime.now().isoformat(sep=" ", timespec="seconds")),
     )
     conn.commit()
@@ -349,20 +338,14 @@ def state():
 def update_profile():
     conn, user = require_user()
     payload = request.get_json(silent=True) or {}
-    office = str(payload.get("office") or "").strip()
     contact = str(payload.get("contact") or "").strip()
     specialization = str(payload.get("specialization") or "").strip()
-    conn.execute(
-        """
-        INSERT INTO web_profiles (user_id, office, contact, specialization)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            office = excluded.office,
-            contact = excluded.contact,
-            specialization = excluded.specialization
-        """,
-        (user["id"], office, contact, specialization),
-    )
+    profile = profile_for(conn, user["id"])
+    if profile:
+        conn.execute(
+            "UPDATE faculty_profiles SET phone = %s, specialization = %s WHERE user_id = %s",
+            (contact, specialization, user["id"]),
+        )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -371,7 +354,7 @@ def update_profile():
 @app.put("/api/documents/<document_id>")
 def update_document(document_id):
     conn, user = require_user()
-    row = conn.execute("SELECT * FROM documents WHERE public_id = ?", (document_id,)).fetchone()
+    row = conn.execute("SELECT * FROM documents WHERE public_id = %s", (document_id,)).fetchone()
     if not row:
         conn.close()
         return json_error("Document not found.", 404)
@@ -384,22 +367,16 @@ def update_document(document_id):
     feedback = incoming.get("feedback")
     if feedback is None:
         feedback = row["reviewer_feedback"]
-    payload = {
-        "indicatorId": incoming.get("indicatorId"),
-        "reviewerId": str(user["id"]),
-        "decidedAt": incoming.get("decidedAt"),
-        "contribution": incoming.get("contribution"),
-    }
     conn.execute(
         """
         UPDATE documents
-        SET status = ?, reviewer_feedback = ?, web_payload = ?
-        WHERE public_id = ?
+        SET status = %s, reviewer_feedback = %s, flagged_for_review = %s
+        WHERE public_id = %s
         """,
-        (status, feedback, json.dumps(payload), document_id),
+        (status, feedback, status in ("pendingReview", "needsRevision"), document_id),
     )
     conn.commit()
-    updated = conn.execute("SELECT * FROM documents WHERE public_id = ?", (document_id,)).fetchone()
+    updated = conn.execute("SELECT * FROM documents WHERE public_id = %s", (document_id,)).fetchone()
     body = document_record(updated)
     conn.close()
     return jsonify(body)
@@ -418,18 +395,13 @@ def assign_reviewer(faculty_id):
     except (TypeError, ValueError):
         conn.close()
         return json_error("Faculty or reviewer was not found.", 404)
-    reviewer = conn.execute("SELECT id FROM users WHERE id = ? AND role = 'reviewer'", (reviewer_id,)).fetchone()
-    person = conn.execute("SELECT user_id FROM faculty_profiles WHERE user_id = ?", (faculty_user_id,)).fetchone()
+    reviewer = conn.execute("SELECT id FROM users WHERE id = %s AND role = 'reviewer'", (reviewer_id,)).fetchone()
+    person = conn.execute("SELECT user_id FROM faculty_profiles WHERE user_id = %s", (faculty_user_id,)).fetchone()
     if not reviewer or not person:
         conn.close()
         return json_error("Faculty or reviewer was not found.", 404)
-    conn.execute(
-        "UPDATE faculty_profiles SET reviewer_user_id = ? WHERE user_id = ?",
-        (reviewer_id, faculty_user_id),
-    )
-    conn.commit()
     conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "reviewerId": reviewer_id, "facultyId": faculty_user_id})
 
 
 @app.post("/api/notifications")
@@ -441,7 +413,7 @@ def create_notification():
     if not public_id or not message:
         conn.close()
         return json_error("Notification is incomplete.", 400)
-    if conn.execute("SELECT id FROM notifications WHERE public_id = ?", (public_id,)).fetchone():
+    if conn.execute("SELECT id FROM notifications WHERE public_id = %s", (public_id,)).fetchone():
         conn.close()
         return json_error("That notification already exists.", 409)
     targets = conn.execute("SELECT id FROM users WHERE role = 'admin'").fetchall()
@@ -454,7 +426,7 @@ def create_notification():
             """
             INSERT INTO notifications (
                 public_id, user_id, kind, message, created_at, visual_state, related_document_id, related_kra
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (item_id, target["id"], "reviewerFeedback", message, created, "unread", payload.get("ref"), None),
         )
@@ -468,7 +440,7 @@ def mark_notification(notification_id):
     conn, _user = require_user()
     payload = request.get_json(silent=True) or {}
     state = "read" if payload.get("read") else "unread"
-    found = conn.execute("UPDATE notifications SET visual_state = ? WHERE public_id = ?", (state, notification_id)).rowcount
+    found = conn.execute("UPDATE notifications SET visual_state = %s WHERE public_id = %s", (state, notification_id)).rowcount
     conn.commit()
     conn.close()
     if not found:
@@ -482,7 +454,7 @@ def mark_notifications():
     payload = request.get_json(silent=True) or {}
     state = "read" if payload.get("read", True) else "unread"
     for item_id in payload.get("ids") or []:
-        conn.execute("UPDATE notifications SET visual_state = ? WHERE public_id = ?", (state, str(item_id)))
+        conn.execute("UPDATE notifications SET visual_state = %s WHERE public_id = %s", (state, str(item_id)))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -501,7 +473,7 @@ def create_audit():
     if ref:
         detail = str(ref) + " — " + str(detail)
     conn.execute(
-        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (%s, %s, %s, %s)",
         (user["email"], action, detail, datetime.now().isoformat(sep=" ", timespec="seconds")),
     )
     conn.commit()
@@ -512,10 +484,17 @@ def create_audit():
 @app.get("/api/health")
 def health():
     conn = connect()
-    users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    documents = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    users = conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()["total"]
+    documents = conn.execute("SELECT COUNT(*) AS total FROM documents").fetchone()["total"]
     conn.close()
-    return jsonify({"ok": True, "users": users, "documents": documents})
+    settings = load_env()
+    return jsonify({
+        "ok": True,
+        "database": settings.get("PGDATABASE", "facultylink"),
+        "host": settings.get("PGHOST", "localhost"),
+        "users": users,
+        "documents": documents,
+    })
 
 
 @app.get("/")
