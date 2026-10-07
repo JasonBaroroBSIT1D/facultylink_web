@@ -174,11 +174,15 @@ FL.admin = {
       onConfirm: function () {
         const facultyId = document.getElementById("assign-faculty").value;
         const person = FL.store.facultyById(facultyId);
-        FL.store.assignReviewer(facultyId, reviewerId);
         const admin = FL.store.userById(session.userId);
-        FL.audit.record(admin, "Reassigned reviewer", person.id, "Assigned " + person.name + " to " + reviewer.name + ".");
-        FL.ui.toast("Assignment saved.", "ok");
-        redraw();
+        FL.store.assignReviewer(facultyId, reviewerId).then(function () {
+          return FL.audit.record(admin, "Reassigned reviewer", person.id, "Assigned " + person.name + " to " + reviewer.name + ".");
+        }).then(function () {
+          FL.ui.toast("Assignment saved.", "ok");
+          redraw();
+        }).catch(function (error) {
+          FL.ui.toast(error.message || "Assignment was not saved.", "danger");
+        });
       }
     });
   },
@@ -306,9 +310,13 @@ FL.admin = {
       user.office = document.getElementById("profile-office").value.trim();
       user.contact = document.getElementById("profile-contact").value.trim();
       user.specialization = document.getElementById("profile-spec").value.trim();
-      FL.store.persist();
-      FL.audit.record(user, "Updated profile", user.employeeNo, "Updated administrator profile details.");
-      FL.ui.toast("Profile updated for this session.", "ok");
+      FL.store.saveProfile(user).then(function () {
+        return FL.audit.record(user, "Updated profile", user.employeeNo, "Updated administrator profile details.");
+      }).then(function () {
+        FL.ui.toast("Profile saved.", "ok");
+      }).catch(function (error) {
+        FL.ui.toast(error.message || "Profile was not saved.", "danger");
+      });
     });
   }
 };

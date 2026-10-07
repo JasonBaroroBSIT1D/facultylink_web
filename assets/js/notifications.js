@@ -16,14 +16,15 @@ FL.notifications = {
 
   mark: function (id, read) {
     const item = FL.store.notifications.find(function (row) { return row.id === id; });
-    if (!item) return;
+    if (!item) return Promise.resolve();
     item.read = read;
-    FL.store.persist();
+    return FL.api.send("PATCH", "/api/notifications/" + encodeURIComponent(id), { read: read });
   },
 
   markAll: function (user) {
+    const ids = this.visible(user).filter(function (item) { return !item.read; }).map(function (item) { return item.id; });
     this.visible(user).forEach(function (item) { item.read = true; });
-    FL.store.persist();
+    return FL.api.send("PATCH", "/api/notifications", { ids: ids, read: true });
   },
 
   render: function (user) {
@@ -65,16 +66,20 @@ FL.notifications = {
     const markAll = document.getElementById("mark-all");
     if (markAll) {
       markAll.addEventListener("click", function () {
-        FL.notifications.markAll(user);
-        rerender();
+        FL.notifications.markAll(user).then(rerender).catch(function (error) {
+          FL.ui.toast(error.message || "Notifications were not updated.", "danger");
+        });
       });
     }
     root.querySelectorAll("[data-read]").forEach(function (button) {
       button.addEventListener("click", function () {
         const item = FL.store.notifications.find(function (row) { return row.id === button.getAttribute("data-read"); });
         if (!item) return;
-        FL.notifications.mark(item.id, !item.read);
-        rerender();
+        const next = !item.read;
+        FL.notifications.mark(item.id, next).then(rerender).catch(function (error) {
+          item.read = !next;
+          FL.ui.toast(error.message || "That notification was not updated.", "danger");
+        });
       });
     });
   }

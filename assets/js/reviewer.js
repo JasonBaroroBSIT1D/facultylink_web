@@ -74,9 +74,13 @@ FL.reviewer = {
       user.office = document.getElementById("profile-office").value.trim();
       user.contact = document.getElementById("profile-contact").value.trim();
       user.specialization = document.getElementById("profile-spec").value.trim();
-      FL.store.persist();
-      FL.audit.record(user, "Updated profile", user.employeeNo, "Updated reviewer profile details.");
-      FL.ui.toast("Profile updated for this session.", "ok");
+      FL.store.saveProfile(user).then(function () {
+        return FL.audit.record(user, "Updated profile", user.employeeNo, "Updated reviewer profile details.");
+      }).then(function () {
+        FL.ui.toast("Profile saved.", "ok");
+      }).catch(function (error) {
+        FL.ui.toast(error.message || "Profile was not saved.", "danger");
+      });
     });
   }
 };

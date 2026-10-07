@@ -31,6 +31,23 @@ FL.scoring = {
   },
 
   scoreDocument(document) {
+    if (typeof document.databasePoints === "number") {
+      const found = document.indicatorId ? FL.rules.findIndicator(document.indicatorId) : null;
+      const validation = FL.validation.evaluate(document);
+      return {
+        kra: found ? found.kra : null,
+        criterion: found ? found.criterion : null,
+        indicator: found ? found.indicator : null,
+        basePoints: document.databasePoints,
+        contributionPercent: 100,
+        finalScore: document.databasePoints,
+        countable: document.status === "approved" && validation.duplicateStatus !== "duplicate",
+        rows: (document.contribution || []).map(function (row) {
+          return { author: row.author, percent: row.percent, subject: !!row.subject, computed: document.databasePoints };
+        }),
+        validation: validation
+      };
+    }
     const found = document.indicatorId ? FL.rules.findIndicator(document.indicatorId) : null;
     const indicator = found ? found.indicator : null;
     const validation = FL.validation.evaluate(document);
@@ -86,6 +103,14 @@ FL.scoring = {
     const groupTotals = {};
 
     documents.forEach(function (doc) {
+      if (typeof doc.databasePoints === "number") {
+        if (doc.status !== "approved" || !doc.kraId || !byId[doc.kraId]) return;
+        const kra = byId[doc.kraId];
+        const criterion = kra.criteria[0];
+        criterion.earned = FL.scoring.round(criterion.earned + doc.databasePoints);
+        criterion.documents.push({ id: doc.id, name: doc.name, points: doc.databasePoints });
+        return;
+      }
       const scored = FL.scoring.scoreDocument(doc);
       if (!scored.countable || scored.finalScore === null || !scored.kra) return;
       const kra = byId[scored.kra.id];

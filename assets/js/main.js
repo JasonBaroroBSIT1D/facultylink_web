@@ -137,12 +137,30 @@ FL.boot = function () {
     if (FL.pages.login) FL.pages.login();
     return;
   }
-  const session = FL.auth.require(document.body.dataset.role);
-  if (!session) return;
-  FL.layout.mount(session, page);
-  const render = FL.pages[page];
-  if (render) render(session);
-  else document.getElementById("page").innerHTML = FL.ui.empty("Page unavailable", "This page is not part of the FacultyLink web application.");
+  const role = document.body.dataset.role;
+  FL.auth.restore().then(function (session) {
+    if (!session) {
+      window.location.replace(FL.auth.loginUrl());
+      return null;
+    }
+    if (role && session.role !== role) {
+      window.location.replace(FL.auth.home(session.role));
+      return null;
+    }
+    return FL.store.load().then(function () {
+      if (!FL.store.userById(session.userId)) {
+        window.location.replace(FL.auth.loginUrl());
+        return;
+      }
+      FL.layout.mount(session, page);
+      const render = FL.pages[page];
+      if (render) render(session);
+      else document.getElementById("page").innerHTML = FL.ui.empty("Page unavailable", "This page is not part of the FacultyLink web application.");
+    });
+  }).catch(function () {
+    const app = document.getElementById("app");
+    if (app) app.innerHTML = FL.ui.empty("Server unavailable", "The FacultyLink backend is not responding. Start it, then reload this page.");
+  });
 };
 
 document.addEventListener("DOMContentLoaded", FL.boot);

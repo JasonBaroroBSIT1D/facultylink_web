@@ -206,8 +206,11 @@ FL.documents = {
     if (select) {
       select.addEventListener("change", function () {
         doc.indicatorId = select.value || null;
-        FL.store.saveDocument(doc);
-        FL.documents.paintReview(session, doc, canDecide);
+        FL.store.saveDocument(doc).then(function () {
+          FL.documents.paintReview(session, doc, canDecide);
+        }).catch(function (error) {
+          FL.ui.toast(error.message || "The indicator was not saved.", "danger");
+        });
       });
     }
     if (canDecide) FL.documents.bindDecision(session, doc);
@@ -446,19 +449,24 @@ FL.documents = {
           doc.status = "approved";
           doc.feedback = feedback.value.trim();
           doc.decidedAt = new Date().toISOString();
-          FL.store.saveDocument(doc);
-          FL.audit.record(user, "Approved document", doc.id, "Approved " + doc.name + ".");
-          FL.store.addNotification({
-            id: "NTF-" + Date.now(),
-            audience: "administrator",
-            title: "Document approved",
-            body: doc.id + " was approved by " + user.name + ".",
-            at: doc.decidedAt,
-            read: false,
-            ref: doc.id
+          FL.store.saveDocument(doc).then(function () {
+            return FL.audit.record(user, "Approved document", doc.id, "Approved " + doc.name + ".");
+          }).then(function () {
+            return FL.store.addNotification({
+              id: "NTF-" + Date.now(),
+              audience: "administrator",
+              title: "Document approved",
+              body: doc.id + " was approved by " + user.name + ".",
+              at: doc.decidedAt,
+              read: false,
+              ref: doc.id
+            });
+          }).then(function () {
+            FL.ui.toast("Document approved.", "ok");
+            FL.documents.paintReview(session, doc, true);
+          }).catch(function (error) {
+            FL.ui.toast(error.message || "The decision was not saved.", "danger");
           });
-          FL.ui.toast("Document approved.", "ok");
-          FL.documents.paintReview(session, doc, true);
         }
       });
     });
@@ -471,19 +479,24 @@ FL.documents = {
       doc.status = "revision";
       doc.feedback = feedback.value.trim();
       doc.decidedAt = new Date().toISOString();
-      FL.store.saveDocument(doc);
-      FL.audit.record(user, "Requested revision", doc.id, doc.feedback);
-      FL.store.addNotification({
-        id: "NTF-" + Date.now(),
-        audience: "administrator",
-        title: "Revision requested",
-        body: user.name + " requested a revision on " + doc.id + ". " + doc.feedback,
-        at: doc.decidedAt,
-        read: false,
-        ref: doc.id
+      FL.store.saveDocument(doc).then(function () {
+        return FL.audit.record(user, "Requested revision", doc.id, doc.feedback);
+      }).then(function () {
+        return FL.store.addNotification({
+          id: "NTF-" + Date.now(),
+          audience: "administrator",
+          title: "Revision requested",
+          body: user.name + " requested a revision on " + doc.id + ". " + doc.feedback,
+          at: doc.decidedAt,
+          read: false,
+          ref: doc.id
+        });
+      }).then(function () {
+        FL.ui.toast("Revision requested.", "warn");
+        FL.documents.paintReview(session, doc, true);
+      }).catch(function (error) {
+        FL.ui.toast(error.message || "The decision was not saved.", "danger");
       });
-      FL.ui.toast("Revision requested.", "warn");
-      FL.documents.paintReview(session, doc, true);
     });
     document.getElementById("reject").addEventListener("click", function () {
       if (!requireText()) {
@@ -501,19 +514,24 @@ FL.documents = {
           doc.status = "rejected";
           doc.feedback = feedback.value.trim();
           doc.decidedAt = new Date().toISOString();
-          FL.store.saveDocument(doc);
-          FL.audit.record(user, "Rejected document", doc.id, doc.feedback);
-          FL.store.addNotification({
-            id: "NTF-" + Date.now(),
-            audience: "administrator",
-            title: "Document rejected",
-            body: user.name + " rejected " + doc.id + ". " + doc.feedback,
-            at: doc.decidedAt,
-            read: false,
-            ref: doc.id
+          FL.store.saveDocument(doc).then(function () {
+            return FL.audit.record(user, "Rejected document", doc.id, doc.feedback);
+          }).then(function () {
+            return FL.store.addNotification({
+              id: "NTF-" + Date.now(),
+              audience: "administrator",
+              title: "Document rejected",
+              body: user.name + " rejected " + doc.id + ". " + doc.feedback,
+              at: doc.decidedAt,
+              read: false,
+              ref: doc.id
+            });
+          }).then(function () {
+            FL.ui.toast("Document rejected.", "danger");
+            FL.documents.paintReview(session, doc, true);
+          }).catch(function (error) {
+            FL.ui.toast(error.message || "The decision was not saved.", "danger");
           });
-          FL.ui.toast("Document rejected.", "danger");
-          FL.documents.paintReview(session, doc, true);
         }
       });
     });

@@ -26,44 +26,31 @@ FL.auth = {
     return /\/(admin|reviewer)\//.test(here) ? "../login.html" : "login.html";
   },
 
-  require: function (role) {
-    FL.store.init();
-    const session = this.current();
-    if (!session || !FL.store.userById(session.userId)) {
-      window.location.replace(this.loginUrl());
+  restore: function () {
+    return FL.api.send("GET", "/api/session").then(function (data) {
+      return data.user || null;
+    }).catch(function () {
       return null;
-    }
-    if (role && session.role !== role) {
-      window.location.replace(this.home(session.role));
-      return null;
-    }
-    return session;
+    });
   },
 
   signIn: function (identity, password) {
-    const key = identity.trim().toLowerCase();
-    const user = FL.seed.users.find(function (item) {
-      return item.username.toLowerCase() === key || item.email.toLowerCase() === key;
+    return FL.api.send("POST", "/api/login", {
+      identity: identity.trim(),
+      password: password
     });
-    if (!user || user.password !== password) return null;
-    const session = { userId: user.id, role: user.role, name: user.name, at: new Date().toISOString() };
-    sessionStorage.setItem(this.sessionKey, JSON.stringify(session));
-    return session;
   },
 
   signOut: function () {
-    sessionStorage.removeItem(this.sessionKey);
-    window.location.href = this.loginUrl();
+    const loginUrl = this.loginUrl();
+    FL.api.send("POST", "/api/logout").finally(function () {
+      window.location.href = loginUrl;
+    });
   }
 };
 
 FL.pages = FL.pages || {};
 FL.pages.login = function () {
-  const existing = FL.auth.current();
-  if (existing && FL.seed.users.some(function (user) { return user.id === existing.userId; })) {
-    window.location.replace(FL.auth.home(existing.role));
-    return;
-  }
   const form = document.getElementById("login-form");
   const identity = document.getElementById("identity");
   const password = document.getElementById("password");
@@ -102,29 +89,22 @@ FL.pages.login = function () {
     if (invalid) return;
     submit.disabled = true;
     submit.innerHTML = '<span class="spinner" aria-hidden="true"></span> Signing in';
-    window.setTimeout(function () {
-      const session = FL.auth.signIn(identity.value, password.value);
-      if (!session) {
-        submit.disabled = false;
-        submit.textContent = "Sign in";
-        formError.hidden = false;
-        formError.textContent = "The username or password is incorrect.";
-        return;
-      }
+    FL.auth.signIn(identity.value, password.value).then(function (session) {
       if (remember.checked) localStorage.setItem(FL.auth.rememberKey, identity.value.trim());
       else localStorage.removeItem(FL.auth.rememberKey);
-      FL.store.init();
-      const user = FL.store.userById(session.userId);
-      FL.audit.record(user, "Signed in", user.employeeNo, "Signed in to the FacultyLink web application.");
       formError.hidden = true;
       submit.classList.add("is-success");
       submit.textContent = "Signed in";
-      const success = document.getElementById("login-success");
-      success.hidden = false;
+      document.getElementById("login-success").hidden = false;
       window.setTimeout(function () {
         window.location.href = FL.auth.home(session.role);
-      }, 500);
-    }, 450);
+      }, 400);
+    }).catch(function (error) {
+      submit.disabled = false;
+      submit.textContent = "Sign in";
+      formError.hidden = false;
+      formError.textContent = error.status ? error.message : "FacultyLink could not reach the server. Start the backend, then try again.";
+    });
   });
   document.getElementById("about-link").addEventListener("click", function () {
     FL.ui.modal({
@@ -160,5 +140,8 @@ FL.pages.login = function () {
       body: "<p>New Administrator and Reviewer accounts are issued by the institution. Contact the Office of the Vice President for Academic Affairs.</p>",
       cancelLabel: "Close"
     });
+  });
+  FL.auth.restore().then(function (existing) {
+    if (existing) window.location.replace(FL.auth.home(existing.role));
   });
 };

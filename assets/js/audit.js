@@ -6,7 +6,7 @@ FL.audit = {
   },
 
   record: function (user, action, ref, description) {
-    FL.store.addAudit({
+    return FL.store.addAudit({
       id: this.nextId(),
       at: new Date().toISOString(),
       user: user.name,
@@ -38,6 +38,7 @@ FL.audit = {
             <option>Administrator</option>
             <option>Reviewer</option>
             <option>System</option>
+            <option>Faculty</option>
           </select>
         </label>
       </div>
