@@ -5,6 +5,8 @@ database used by the mobile app. The SQLite file was only the guide for
 those table names. New mobile uploads are read from this database.
 """
 
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +36,7 @@ STATUS_TO_WEB = {
     "rejected": "rejected",
 }
 STATUS_TO_DB = {value: key for key, value in STATUS_TO_WEB.items()}
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 app = Flask(__name__)
 app.secret_key = "facultylink-local-secret"
@@ -78,10 +81,12 @@ def init_db():
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
         )
     }
-    conn.close()
     missing = required - present
     if missing:
+        conn.close()
         raise RuntimeError("PostgreSQL is missing tables: " + ", ".join(sorted(missing)))
+    ensure_kra_settings(conn)
+    conn.close()
 
 
 def display_name(email, profile_name=None):
@@ -117,6 +122,82 @@ def json_error(message, status):
     response = jsonify({"error": message})
     response.status_code = status
     return response
+
+
+def ensure_kra_settings(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kra_settings (
+            id INTEGER PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+
+
+def clean_score(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")) or number < 0 or number > 10000:
+        return None
+    return round(number, 2)
+
+
+def sanitize_kra_settings(payload):
+    if not isinstance(payload, dict):
+        return None
+    cleaned = {"kras": {}, "criteria": {}, "indicators": {}}
+    fields = {
+        "kras": ("maxPoints",),
+        "criteria": ("maxPoints",),
+        "indicators": ("points", "maxPoints", "multiplier"),
+    }
+    for bucket, allowed in fields.items():
+        incoming = payload.get(bucket) or {}
+        if not isinstance(incoming, dict):
+            return None
+        for item_id, values in incoming.items():
+            if not re.fullmatch(r"[a-z0-9-]{1,80}", str(item_id)) or not isinstance(values, dict):
+                return None
+            item = {}
+            for field in allowed:
+                if field not in values:
+                    continue
+                number = clean_score(values[field])
+                if number is None:
+                    return None
+                item[field] = number
+            if item:
+                cleaned[bucket][item_id] = item
+    return cleaned
+
+
+def read_kra_settings(conn):
+    ensure_kra_settings(conn)
+    row = conn.execute("SELECT payload FROM kra_settings WHERE id = 1").fetchone()
+    if not row:
+        return {"kras": {}, "criteria": {}, "indicators": {}}
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return {"kras": {}, "criteria": {}, "indicators": {}}
+    return sanitize_kra_settings(payload) or {"kras": {}, "criteria": {}, "indicators": {}}
+
+
+def write_kra_settings(conn, settings):
+    ensure_kra_settings(conn)
+    conn.execute(
+        """
+        INSERT INTO kra_settings (id, payload, updated_at)
+        VALUES (1, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+        """,
+        (json.dumps(settings), datetime.now().isoformat(sep=" ", timespec="seconds")),
+    )
 
 
 def profile_for(conn, user_id):
@@ -321,6 +402,7 @@ def state():
         """
     )]
     allowed = visible_faculty_ids(conn, user)
+    kra_settings = read_kra_settings(conn)
     conn.close()
     if allowed is not None:
         faculty = [person for person in faculty if int(person["id"]) in allowed]
@@ -331,7 +413,33 @@ def state():
         "documents": documents,
         "notifications": notifications,
         "audit": audit,
+        "kraSettings": kra_settings,
     })
+
+
+@app.put("/api/kra-settings")
+def update_kra_settings():
+    conn, user = require_user()
+    if user["role"] != "admin":
+        conn.close()
+        return json_error("Only an administrator can change KRA scores.", 403)
+    settings = sanitize_kra_settings(request.get_json(silent=True) or {})
+    if settings is None:
+        conn.close()
+        return json_error("Enter scores from 0 through 10000.", 400)
+    write_kra_settings(conn, settings)
+    conn.execute(
+        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (%s, %s, %s, %s)",
+        (
+            user["email"],
+            "Updated KRA scores",
+            "Saved KRA configuration scores used for FacultyLink scoring.",
+            datetime.now().isoformat(sep=" ", timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "kraSettings": settings})
 
 
 @app.patch("/api/profile")
@@ -495,6 +603,43 @@ def health():
         "users": users,
         "documents": documents,
     })
+
+
+@app.get("/forgot-password")
+def forgot_password_page():
+    return send_from_directory(ROOT, "forgot-password.html")
+
+
+@app.post("/api/forgot-password")
+def forgot_password():
+    payload = request.get_json(silent=True) or {}
+    email = str(payload.get("email") or "").strip().lower()
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 254:
+        return json_error("Enter a valid email address.", 400)
+    message = (
+        "No reset email was sent. Password recovery by email is not connected yet. "
+        "If this address belongs to an administrator or reviewer account, the request is recorded for your institution administrator."
+    )
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT email, role FROM users WHERE lower(email) = %s",
+            (email,),
+        ).fetchone()
+        if row and row["role"] in ("admin", "reviewer"):
+            conn.execute(
+                "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (%s, %s, %s, %s)",
+                (
+                    row["email"],
+                    "Requested password reset",
+                    "Requested a password reset from the web portal. No reset email was sent.",
+                    datetime.now().isoformat(sep=" ", timespec="seconds"),
+                ),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "emailSent": False, "message": message})
 
 
 @app.get("/")

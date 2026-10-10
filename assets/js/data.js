@@ -58,6 +58,7 @@ FL.store = {
       store.users = data.users || [];
       store.notifications = data.notifications || [];
       store.audit = data.audit || [];
+      if (FL.rules.applySettings) FL.rules.applySettings(data.kraSettings || {});
     });
   },
 
@@ -100,6 +101,13 @@ FL.store = {
   addNotification: function (item) {
     this.notifications.unshift(item);
     return FL.api.send("POST", "/api/notifications", item);
+  },
+
+  saveKraSettings: function (settings) {
+    return FL.api.send("PUT", "/api/kra-settings", settings).then(function (data) {
+      FL.rules.applySettings(data.kraSettings || settings);
+      return data;
+    });
   },
 
   addAudit: function (entry) {

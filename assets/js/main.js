@@ -137,6 +137,10 @@ FL.boot = function () {
     if (FL.pages.login) FL.pages.login();
     return;
   }
+  if (page === "forgot-password") {
+    if (FL.pages.forgotPassword) FL.pages.forgotPassword();
+    return;
+  }
   const role = document.body.dataset.role;
   FL.auth.restore().then(function (session) {
     if (!session) {

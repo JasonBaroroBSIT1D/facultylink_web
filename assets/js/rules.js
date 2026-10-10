@@ -636,3 +636,60 @@ FL.rules.findIndicator = function (id) {
 FL.rules.findKra = function (id) {
   return FL.rules.kras.find(function (k) { return k.id === id; }) || null;
 };
+
+FL.rules.captureDefaults = function () {
+  if (this._defaults) return;
+  this._defaults = JSON.parse(JSON.stringify(this.kras));
+};
+
+FL.rules.scoreDraft = function () {
+  const draft = { kras: {}, criteria: {}, indicators: {} };
+  this.kras.forEach(function (kra) {
+    draft.kras[kra.id] = { maxPoints: kra.maxPoints };
+    kra.criteria.forEach(function (criterion) {
+      draft.criteria[criterion.id] = { maxPoints: criterion.maxPoints };
+      criterion.indicators.forEach(function (indicator) {
+        const entry = { maxPoints: indicator.maxPoints };
+        if (indicator.formula && indicator.formula.type === "rating") entry.multiplier = indicator.formula.multiplier;
+        else if (typeof indicator.points === "number") entry.points = indicator.points;
+        else return;
+        draft.indicators[indicator.id] = entry;
+      });
+    });
+  });
+  return draft;
+};
+
+FL.rules.applySettings = function (settings) {
+  this.captureDefaults();
+  this.kras = JSON.parse(JSON.stringify(this._defaults));
+  const saved = settings || {};
+  const kras = saved.kras || {};
+  const criteria = saved.criteria || {};
+  const indicators = saved.indicators || {};
+  this.kras.forEach(function (kra) {
+    if (kras[kra.id] && typeof kras[kra.id].maxPoints === "number") kra.maxPoints = kras[kra.id].maxPoints;
+    kra.criteria.forEach(function (criterion) {
+      if (criteria[criterion.id] && typeof criteria[criterion.id].maxPoints === "number") {
+        criterion.maxPoints = criteria[criterion.id].maxPoints;
+      }
+      criterion.indicators.forEach(function (indicator) {
+        const update = indicators[indicator.id];
+        if (!update) return;
+        if (typeof update.maxPoints === "number") {
+          indicator.maxPoints = update.maxPoints;
+          if (indicator.groupMax) indicator.groupMax.max = update.maxPoints;
+        }
+        if (indicator.formula && indicator.formula.type === "rating" && typeof update.multiplier === "number") {
+          indicator.formula.multiplier = update.multiplier;
+          indicator.pointsLabel = "OR ÷ 100 × " + update.multiplier;
+        } else if (typeof update.points === "number") {
+          indicator.points = update.points;
+          if (indicator.pointsLabel && indicator.pointsLabel.indexOf("% contribution") === 0) {
+            indicator.pointsLabel = "% contribution × " + update.points;
+          }
+        }
+      });
+    });
+  });
+};

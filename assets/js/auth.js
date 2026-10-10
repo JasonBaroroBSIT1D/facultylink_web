@@ -113,13 +113,6 @@ FL.pages.login = function () {
       cancelLabel: "Close"
     });
   });
-  document.getElementById("forgot-password").addEventListener("click", function () {
-    FL.ui.modal({
-      title: "Forgot password",
-      body: "<p>Password assistance is handled by the institution administrator. Use the Administrator or Reviewer account issued for FacultyLink.</p>",
-      cancelLabel: "Close"
-    });
-  });
   document.getElementById("contact-admin").addEventListener("click", function () {
     FL.ui.modal({
       title: "Contact institution admin",
@@ -129,5 +122,57 @@ FL.pages.login = function () {
   });
   FL.auth.restore().then(function (existing) {
     if (existing) window.location.replace(FL.auth.home(existing.role));
+  });
+};
+
+FL.pages.forgotPassword = function () {
+  const form = document.getElementById("reset-form");
+  const email = document.getElementById("reset-email");
+  const emailError = document.getElementById("reset-email-error");
+  const formError = document.getElementById("reset-error");
+  const confirmation = document.getElementById("reset-confirmation");
+  const confirmationText = document.getElementById("reset-confirmation-text");
+  const submit = document.getElementById("send-reset");
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    emailError.textContent = "";
+    formError.hidden = true;
+    confirmation.hidden = true;
+    const value = email.value.trim();
+    if (!value) {
+      emailError.textContent = "Email address is required.";
+      email.focus();
+      return;
+    }
+    if (!emailPattern.test(value) || value.length > 254) {
+      emailError.textContent = "Enter a valid email address.";
+      email.focus();
+      return;
+    }
+    submit.disabled = true;
+    submit.innerHTML = '<span class="spinner" aria-hidden="true"></span> Sending';
+    FL.api.send("POST", "/api/forgot-password", { email: value }).then(function (result) {
+      submit.disabled = false;
+      submit.textContent = "Send Reset Link";
+      confirmationText.textContent = result.emailSent
+        ? (result.message || "A reset link was sent to that email address.")
+        : (result.message || "No reset email was sent. Password recovery by email is not connected yet. Contact your institution administrator.");
+      confirmation.hidden = false;
+    }).catch(function (error) {
+      submit.disabled = false;
+      submit.textContent = "Send Reset Link";
+      formError.hidden = false;
+      formError.textContent = error.status ? error.message : "FacultyLink could not reach the server. Start the backend, then try again.";
+    });
+  });
+
+  document.getElementById("about-link").addEventListener("click", function () {
+    FL.ui.modal({
+      title: "About FacultyLink",
+      body: "<p>FacultyLink is an intelligent document-validated faculty self-assessment system for DBM–CHED Joint Circular rank upgrade and reclassification.</p><p>It supports document validation, KRA scoring, compliance monitoring, reviewer feedback, and rank upgrade simulation for State Universities and Colleges.</p><p>FacultyLink prepares and supports evaluation. It does not replace the official evaluation of authorized committees or the SUC governing board.</p>",
+      cancelLabel: "Close"
+    });
   });
 };

@@ -187,48 +187,197 @@ FL.admin = {
     });
   },
 
-  renderKra: function () {
+  renderKra: function (session) {
     const page = document.getElementById("page");
+    const draft = FL.rules.scoreDraft();
+    let activeKra = FL.rules.kras[0].id;
+    const openCriteria = {};
+    const openIndicators = {};
+    if (FL.rules.kras[0].criteria[0]) openCriteria[FL.rules.kras[0].criteria[0].id] = true;
     page.innerHTML = `
       <div class="page-head"><div>
         <p class="eyebrow">${FL.esc(FL.rules.citation)}</p>
         <h1>KRA Configuration</h1>
-        <p class="lede">Predefined evaluation rules from ${FL.esc(FL.rules.annex)}. ${FL.esc(FL.scoring.formula)}</p>
+        <p class="lede">Scores start from ${FL.esc(FL.rules.annex)} and can be changed here. Saved scores are what FacultyLink uses. ${FL.esc(FL.scoring.formula)}</p>
       </div></div>
-      <div class="callout"><strong>Rule source</strong><p>${FL.rules.globalConditions.map(FL.esc).join(" ")}</p></div>
-      <div class="toolbar"><label class="search"><span class="sr-only">Search rules</span><input id="rule-search" type="search" placeholder="Search KRA, criterion, indicator, or evidence"></label></div>
-      <div id="rule-list" class="stack"></div>`;
+      <details class="callout kra-source"><summary>Rule source</summary><p>${FL.rules.globalConditions.map(FL.esc).join(" ")}</p></details>
+      <div class="toolbar kra-tools">
+        <label class="search"><span class="sr-only">Search rules</span><input id="rule-search" type="search" placeholder="Search KRA, criterion, indicator, or evidence"></label>
+        <button class="btn btn-primary" id="save-scores" type="button">Save scores</button>
+        <button class="btn btn-ghost" id="reset-scores" type="button">Restore official scores</button>
+      </div>
+      <p id="score-error" class="form-error" hidden></p>
+      <div id="rule-list"></div>`;
+    const scoreInput = function (kind, id, field, value) {
+      return `<input class="score-input" type="number" min="0" max="10000" step="0.01" inputmode="decimal" data-kind="${kind}" data-id="${FL.esc(id)}" data-field="${field}" value="${FL.esc(value)}" aria-label="${FL.esc(field)}">`;
+    };
+    const readInputs = function () {
+      document.querySelectorAll(".score-input").forEach(function (input) {
+        const bucket = draft[input.dataset.kind];
+        const id = input.dataset.id;
+        if (!bucket || !bucket[id]) return;
+        bucket[id][input.dataset.field] = input.value;
+      });
+    };
+    const matchesQuery = function (kra, criterion, indicator, query) {
+      if (!query) return true;
+      return [kra.name, kra.code, kra.summary, criterion.name, criterion.description || "", indicator.name, (indicator.evidence || []).join(" "), (indicator.conditions || []).join(" ")].join(" ").toLowerCase().indexOf(query) !== -1;
+    };
     const draw = function () {
+      readInputs();
       const query = document.getElementById("rule-search").value.trim().toLowerCase();
-      const blocks = [];
-      FL.rules.kras.forEach(function (kra) {
-        kra.criteria.forEach(function (criterion) {
-          const indicators = criterion.indicators.filter(function (indicator) {
-            if (!query) return true;
-            return [kra.name, kra.code, criterion.name, indicator.name, (indicator.evidence || []).join(" "), (indicator.conditions || []).join(" ")].join(" ").toLowerCase().indexOf(query) !== -1;
-          });
-          if (!indicators.length) return;
-          blocks.push(`<article class="card">
-            <div class="card-head"><h2>${FL.esc(kra.code)} — ${FL.esc(criterion.name)}</h2><span>Maximum ${criterion.maxPoints}${criterion.bonus ? " bonus" : ""}</span></div>
-            <p>${FL.esc(criterion.description || kra.summary)}</p>
-            <div class="table-wrap"><table class="data">
-              <thead><tr><th>Indicator</th><th>Points</th><th>Maximum</th><th>Documentary evidence</th><th>Contribution / conditions</th></tr></thead>
-              <tbody>${indicators.map(function (indicator) {
-                return `<tr>
-                  <td>${FL.esc(indicator.name)}</td>
-                  <td>${FL.esc(indicator.pointsLabel || (indicator.points == null ? "—" : String(indicator.points)))}</td>
-                  <td>${FL.esc(String(indicator.maxPoints))}</td>
-                  <td>${FL.esc(indicator.evidence.join("; "))}</td>
-                  <td>${FL.esc(FL.documents.contributionNote(indicator))} ${FL.esc(indicator.conditions[0] || "")}</td>
-                </tr>`;
-              }).join("")}</tbody>
-            </table></div>
-          </article>`);
+      const scrollY = window.scrollY;
+      const groups = FL.rules.kras.map(function (kra) {
+        const criteria = kra.criteria.map(function (criterion) {
+          return { criterion: criterion, indicators: criterion.indicators.filter(function (indicator) { return matchesQuery(kra, criterion, indicator, query); }) };
+        }).filter(function (group) { return group.indicators.length; });
+        return { kra: kra, criteria: criteria };
+      });
+      const visible = groups.filter(function (group) { return group.criteria.length; });
+      if (query && visible.length && !visible.some(function (group) { return group.kra.id === activeKra; })) activeKra = visible[0].kra.id;
+      const tabs = FL.rules.kras.map(function (kra) {
+        const count = (groups.find(function (group) { return group.kra.id === kra.id; }) || { criteria: [] }).criteria.reduce(function (sum, group) { return sum + group.indicators.length; }, 0);
+        const selected = kra.id === activeKra;
+        return `<button class="kra-tab${selected ? " is-active" : ""}" type="button" role="tab" id="tab-${FL.esc(kra.id)}" aria-selected="${selected ? "true" : "false"}" aria-controls="panel-${FL.esc(kra.id)}" data-kra-tab="${FL.esc(kra.id)}"><strong>${FL.esc(kra.code)}</strong><small>${FL.esc(kra.name)}${query ? " · " + count : ""}</small></button>`;
+      }).join("");
+      const panels = groups.map(function (group) {
+        const kra = group.kra;
+        const hidden = kra.id !== activeKra;
+        const folds = group.criteria.map(function (item) {
+          const criterion = item.criterion;
+          const opened = query ? openCriteria[criterion.id] !== false : !!openCriteria[criterion.id];
+          return `<article class="kra-fold">
+            <div class="kra-fold-head">
+              <button class="kra-toggle" type="button" data-toggle-criterion="${FL.esc(criterion.id)}" aria-expanded="${opened ? "true" : "false"}" aria-controls="fold-${FL.esc(criterion.id)}"><span class="mark" aria-hidden="true">${opened ? "▾" : "▸"}</span><span>${FL.esc(criterion.name)}</span><span class="kra-count">${item.indicators.length} indicator${item.indicators.length === 1 ? "" : "s"}</span></button>
+              <label class="score-cap">${criterion.bonus ? "Bonus maximum" : "Maximum"} ${scoreInput("criteria", criterion.id, "maxPoints", draft.criteria[criterion.id].maxPoints)}</label>
+            </div>
+            <div class="kra-fold-body" id="fold-${FL.esc(criterion.id)}" ${opened ? "" : "hidden"}>
+              <p class="sub">${FL.esc(criterion.description || kra.summary)}</p>
+              <div class="table-wrap"><table class="data kra-table">
+                <thead><tr><th>Indicator</th><th>Points</th><th>Maximum</th><th></th></tr></thead>
+                <tbody>${item.indicators.map(function (indicator) {
+                  const saved = draft.indicators[indicator.id];
+                  let pointsCell = FL.esc(indicator.pointsLabel || "—");
+                  if (saved && saved.multiplier !== undefined) pointsCell = `<span class="score-formula">OR ÷ 100 × ${scoreInput("indicators", indicator.id, "multiplier", saved.multiplier)}</span>`;
+                  else if (saved && saved.points !== undefined) pointsCell = scoreInput("indicators", indicator.id, "points", saved.points);
+                  const maxCell = saved ? scoreInput("indicators", indicator.id, "maxPoints", saved.maxPoints) : FL.esc(String(indicator.maxPoints));
+                  const detailOpen = query ? openIndicators[indicator.id] !== false : !!openIndicators[indicator.id];
+                  const conditions = (indicator.conditions || []).slice();
+                  const note = FL.documents.contributionNote(indicator);
+                  if (note) conditions.unshift(note);
+                  return `<tr>
+                    <td>${FL.esc(indicator.name)}</td>
+                    <td>${pointsCell}</td>
+                    <td>${maxCell}</td>
+                    <td><button class="btn btn-small btn-ghost" type="button" data-toggle-indicator="${FL.esc(indicator.id)}" aria-expanded="${detailOpen ? "true" : "false"}">${detailOpen ? "Hide details" : "Details"}</button></td>
+                  </tr>
+                  <tr class="kra-detail" ${detailOpen ? "" : "hidden"}><td colspan="4">
+                    <p><strong>Documentary evidence.</strong> ${FL.esc((indicator.evidence || []).join("; "))}</p>
+                    <p><strong>Contribution / conditions.</strong> ${FL.esc(conditions.join(" "))}</p>
+                  </td></tr>`;
+                }).join("")}</tbody>
+              </table></div>
+            </div>
+          </article>`;
+        }).join("");
+        return `<section class="kra-panel" role="tabpanel" id="panel-${FL.esc(kra.id)}" aria-labelledby="tab-${FL.esc(kra.id)}" ${hidden ? "hidden" : ""}>
+          <div class="kra-banner">
+            <div><h2>${FL.esc(kra.code)} — ${FL.esc(kra.name)}</h2><p class="sub">${FL.esc(kra.summary)}</p></div>
+            <label class="score-cap">KRA maximum ${scoreInput("kras", kra.id, "maxPoints", draft.kras[kra.id].maxPoints)}</label>
+          </div>
+          ${folds || FL.ui.empty("No rules", "No indicator in this KRA matches the search.")}
+        </section>`;
+      }).join("");
+      const host = document.getElementById("rule-list");
+      host.innerHTML = visible.length ? `<div class="kra-tabs" role="tablist">${tabs}</div>${panels}` : FL.ui.empty("No rules", "No indicator matches this search.");
+      host.querySelectorAll("[data-kra-tab]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          activeKra = button.getAttribute("data-kra-tab");
+          draw();
         });
       });
-      document.getElementById("rule-list").innerHTML = blocks.length ? blocks.join("") : FL.ui.empty("No rules", "No indicator matches this search.");
+      host.querySelectorAll("[data-toggle-criterion]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          const id = button.getAttribute("data-toggle-criterion");
+          const opened = query ? openCriteria[id] !== false : !!openCriteria[id];
+          openCriteria[id] = !opened;
+          draw();
+        });
+      });
+      host.querySelectorAll("[data-toggle-indicator]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          const id = button.getAttribute("data-toggle-indicator");
+          const opened = query ? openIndicators[id] !== false : !!openIndicators[id];
+          openIndicators[id] = !opened;
+          draw();
+        });
+      });
+      window.scrollTo(0, scrollY);
+    };
+    const showError = function (message) {
+      const error = document.getElementById("score-error");
+      error.hidden = !message;
+      error.textContent = message || "";
+    };
+    const numericDraft = function () {
+      readInputs();
+      const copy = JSON.parse(JSON.stringify(draft));
+      let invalid = false;
+      ["kras", "criteria", "indicators"].forEach(function (bucket) {
+        Object.keys(copy[bucket]).forEach(function (id) {
+          Object.keys(copy[bucket][id]).forEach(function (field) {
+            const raw = String(copy[bucket][id][field]).trim();
+            const number = Number(raw);
+            if (raw === "" || !Number.isFinite(number) || number < 0 || number > 10000) invalid = true;
+            else copy[bucket][id][field] = Math.round(number * 100) / 100;
+          });
+        });
+      });
+      return invalid ? null : copy;
     };
     document.getElementById("rule-search").addEventListener("input", draw);
+    document.getElementById("save-scores").addEventListener("click", function () {
+      const settings = numericDraft();
+      if (!settings) {
+        showError("Enter scores from 0 through 10000.");
+        return;
+      }
+      showError("");
+      const button = document.getElementById("save-scores");
+      button.disabled = true;
+      FL.store.saveKraSettings(settings).then(function () {
+        const user = FL.store.userById(session.userId);
+        return FL.audit.record(user, "Updated KRA scores", "KRA", "Saved KRA configuration scores.");
+      }).then(function () {
+        button.disabled = false;
+        FL.ui.toast("Scores saved.", "ok");
+        draw();
+      }).catch(function (error) {
+        button.disabled = false;
+        showError(error.message || "Scores were not saved.");
+      });
+    });
+    document.getElementById("reset-scores").addEventListener("click", function () {
+      FL.ui.modal({
+        title: "Restore official scores",
+        body: "<p>This replaces the saved scores with the DBM–CHED Joint Circular values.</p>",
+        confirmLabel: "Restore",
+        onConfirm: function () {
+          FL.store.saveKraSettings({ kras: {}, criteria: {}, indicators: {} }).then(function () {
+            document.getElementById("rule-list").innerHTML = "";
+            const fresh = FL.rules.scoreDraft();
+            draft.kras = fresh.kras;
+            draft.criteria = fresh.criteria;
+            draft.indicators = fresh.indicators;
+            showError("");
+            draw();
+            FL.ui.toast("Official scores restored.", "ok");
+          }).catch(function (error) {
+            showError(error.message || "Official scores were not restored.");
+          });
+        }
+      });
+    });
     draw();
   },
 
@@ -323,7 +472,7 @@ FL.admin = {
 
 FL.pages["admin-dashboard"] = function () { FL.admin.renderDashboard(); };
 FL.pages["admin-reviewers"] = function (session) { FL.admin.renderReviewers(session); };
-FL.pages["admin-kra"] = function () { FL.admin.renderKra(); };
+FL.pages["admin-kra"] = function (session) { FL.admin.renderKra(session); };
 FL.pages["admin-reports"] = function () { FL.admin.renderReports(); };
 FL.pages["admin-profile"] = function (session) { FL.admin.renderProfile(session); };
 FL.pages["admin-notifications"] = function (session) {
