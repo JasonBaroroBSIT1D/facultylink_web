@@ -120,20 +120,6 @@ FL.pages.login = function () {
       cancelLabel: "Close"
     });
   });
-  document.getElementById("help-link").addEventListener("click", function () {
-    FL.ui.modal({
-      title: "Help",
-      body: "<p>Sign in with the email address and password issued for an Administrator or Reviewer account. The email field also accepts the assigned username.</p>",
-      cancelLabel: "Close"
-    });
-  });
-  document.getElementById("support-link").addEventListener("click", function () {
-    FL.ui.modal({
-      title: "Support",
-      body: "<p>For account access, contact the institution administrator.</p>",
-      cancelLabel: "Close"
-    });
-  });
   document.getElementById("contact-admin").addEventListener("click", function () {
     FL.ui.modal({
       title: "Contact institution admin",
