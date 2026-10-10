@@ -301,7 +301,7 @@ a.text-link:hover { text-decoration: underline; }
   align-items: center;
   gap: 12px;
   padding: 14px 22px;
-  background: rgba(255, 255, 255, 0.92);
+  background: #fff;
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
@@ -354,16 +354,20 @@ a.text-link:hover { text-decoration: underline; }
 .score-cap { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.92rem; white-space: nowrap; }
 .score-input { width: 84px; border: 1px solid #c5d0dc; border-radius: 8px; padding: 6px 8px; background: #fff; }
 .score-formula { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.kra-tools { position: sticky; top: 62px; z-index: 4; background: var(--paper); padding: 8px 0; margin-bottom: 8px; }
+.kra-tools {
+  position: sticky; top: 62px; z-index: 4; background: var(--paper);
+  padding: 8px 0 10px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.kra-tools .kra-tabs { flex: 1 0 100%; margin: 2px 0 0; }
 .kra-source summary { cursor: pointer; font-weight: 750; color: var(--navy); }
 .kra-source p { margin: 8px 0 0; }
-.kra-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.kra-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
 .kra-tab {
   border: 1px solid var(--line); background: #fff; color: var(--navy);
-  border-radius: 14px; padding: 8px 12px; cursor: pointer; text-align: left; min-width: 148px;
+  border-radius: 14px; padding: 8px 12px; cursor: pointer; text-align: left; min-width: 0;
 }
 .kra-tab strong, .kra-tab small { display: block; }
-.kra-tab small { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.kra-tab small { color: var(--muted); font-size: 0.78rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kra-tab.is-active { background: var(--navy); color: #fff; border-color: var(--navy); }
 .kra-tab.is-active small { color: rgba(255, 255, 255, 0.78); }
 .kra-banner {
@@ -381,12 +385,20 @@ a.text-link:hover { text-decoration: underline; }
 .kra-toggle .mark { width: 1.1rem; color: var(--teal); }
 .kra-count { margin-left: auto; color: var(--muted); font-size: 0.8rem; font-weight: 600; }
 .kra-fold-body { padding: 0 12px 12px; }
-.kra-fold-body .table-wrap { margin-top: 8px; }
-table.kra-table { min-width: 0; }
-table.kra-table th, table.kra-table td { padding: 8px; }
-.kra-detail td { background: #f7fafc; }
-.kra-detail p { margin: 0 0 6px; }
-.kra-detail ul { margin: 0; padding-left: 18px; }
+.kra-indicators { display: grid; margin-top: 4px; }
+.kra-indicator {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.kra-indicator-name { margin: 0; font-weight: 650; flex: 1 0 100%; }
+.kra-indicator-scores { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-start; }
+.kra-indicator-detail { flex: 1 0 100%; background: #f7fafc; border-radius: 10px; padding: 8px 10px; }
+@media (min-width: 1100px) {
+  .kra-indicator-name { flex: 1 1 240px; }
+  .kra-indicator-scores { flex: 0 1 auto; justify-content: flex-end; }
+}
+.kra-indicator-detail p { margin: 0 0 6px; }
+.kra-indicator-detail p:last-child { margin: 0; }
 .stat-grid, .split, .review-grid { display: grid; gap: 16px; margin-bottom: 16px; }
 .stat-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .split, .review-grid { grid-template-columns: 1.1fr 0.9fr; }
@@ -518,9 +530,9 @@ table.data tr.is-selected { background: #f3fbfb; }
   .user-chip small, .user-chip strong { display: none; }
   .page { padding: 16px; }
   .kra-tools { top: 56px; }
-  .kra-tabs { display: grid; grid-template-columns: 1fr 1fr; }
-  .kra-tab { min-width: 0; }
+  .kra-tabs { grid-template-columns: 1fr 1fr; }
   .kra-banner, .kra-fold-head { flex-direction: column; align-items: stretch; }
+  .kra-indicator-scores { justify-content: flex-start; }
   .facts, .form-grid, .stat-grid, .workflow { grid-template-columns: 1fr; }
   .page-head, .notice, .decision-row { flex-direction: column; }
   .topbar { padding: 12px; }
