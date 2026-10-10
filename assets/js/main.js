@@ -57,8 +57,8 @@ FL.layout = {
       <div class="shell">
         <aside class="sidebar" id="sidebar">
           <a class="brand" href="${FL.esc(items[0].href)}">
-            <img src="../assets/images/logo.svg" alt="">
-            <span><strong>FacultyLink</strong><small>${FL.esc(FL.institution.campus)}</small></span>
+            <span class="brand-crest"><img src="../assets/images/facultylink-mark.png" alt=""></span>
+            <span class="brand-copy"><strong>Faculty<span>Link</span></strong><small>${FL.esc(FL.institution.campus)}</small></span>
           </a>
           <p class="role-label">${role === "administrator" ? "Administrator" : "Reviewer"}</p>
           <nav class="side-nav" aria-label="Primary">
