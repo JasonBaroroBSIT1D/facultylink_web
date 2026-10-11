@@ -94,6 +94,16 @@ FL.documents = {
               const reviewer = FL.store.userById(doc.reviewerId);
               const scored = FL.scoring.scoreDocument(doc);
               const ocr = doc.ocr && doc.ocr.status === "completed" ? "Completed" : doc.ocr && doc.ocr.status === "processing" ? "Processing" : "Pending";
+              const approvedScore = doc.status === "approved" && doc.review && typeof doc.review.finalScore === "number"
+                ? doc.review.finalScore
+                : null;
+              const scoreCell = doc.status === "ignored-duplicate"
+                ? "—"
+                : approvedScore !== null
+                  ? FL.esc(String(approvedScore))
+                  : typeof doc.databasePoints === "number"
+                    ? `<span title="Uploaded by faculty; not counted until approved">—</span><div class="sub">Uploaded ${FL.esc(String(doc.databasePoints))}</div>`
+                    : "—";
               return `<tr>
                 <td>${FL.esc(doc.id)}</td>
                 <td>${FL.esc(faculty ? faculty.name : "—")}</td>
@@ -101,7 +111,7 @@ FL.documents = {
                 <td>${FL.esc(FL.documents.kraLabel(doc))}</td>
                 <td>${FL.ui.statusBadge(ocr === "Completed" ? "completed" : ocr === "Processing" ? "processing" : "pending")}</td>
                 <td>${FL.ui.statusBadge(scored.validation.overall === "valid" ? "valid" : scored.validation.overall === "invalid" ? "invalid" : "reviewer-required")}</td>
-                <td>${scored.finalScore === null || doc.status === "ignored-duplicate" ? "—" : FL.esc(String(scored.finalScore))}</td>
+                <td>${scoreCell}</td>
                 <td>${FL.esc(reviewer ? reviewer.name : "—")}</td>
                 <td>${FL.esc(FL.formatWhen(doc.dateSubmitted))}</td>
                 <td><a class="btn btn-small btn-primary" href="${FL.documents.href(doc.id)}">${FL.esc(options.action)}</a></td>
@@ -213,17 +223,31 @@ FL.documents = {
     }
     if (canDecide) {
       const assignedScore = document.getElementById("assigned-score");
-      if (assignedScore) {
-        const updatePreview = function () {
-          const preview = FL.documents.scorePreview(doc, Number(assignedScore.value));
-          const percent = document.getElementById("score-preview-percent");
-          const final = document.getElementById("score-preview-final");
-          if (percent) percent.textContent = preview.percent == null ? "—" : preview.percent + "%";
-          if (final) final.textContent = preview.finalScore == null ? "—" : String(preview.finalScore);
-        };
-        assignedScore.addEventListener("input", updatePreview);
-        updatePreview();
-      }
+      const decisionScore = document.getElementById("decision-score");
+      const refreshPreview = function (value) {
+        const preview = FL.documents.scorePreview(doc, Number(value));
+        const pairs = [
+          ["score-preview-percent", "decision-preview-percent", preview.percent == null ? "—" : preview.percent + "%"],
+          ["score-preview-final", "decision-preview-final", preview.finalScore == null ? "—" : String(preview.finalScore)]
+        ];
+        pairs.forEach(function (pair) {
+          const a = document.getElementById(pair[0]);
+          const b = document.getElementById(pair[1]);
+          if (a) a.textContent = pair[2];
+          if (b) b.textContent = pair[2];
+        });
+      };
+      const syncScore = function (source, target) {
+        if (!source) return;
+        source.addEventListener("input", function () {
+          if (target) target.value = source.value;
+          refreshPreview(source.value);
+        });
+      };
+      syncScore(assignedScore, decisionScore);
+      syncScore(decisionScore, assignedScore);
+      if (decisionScore) refreshPreview(decisionScore.value);
+      else if (assignedScore) refreshPreview(assignedScore.value);
       FL.documents.bindDecision(session, doc);
     }
   },
@@ -375,15 +399,20 @@ FL.documents = {
     if (percent < 0 || percent > 100) return { error: "Contribution percentage must be from 0 through 100." };
     const finalScore = FL.scoring.round(assigned * (percent / 100));
     if (finalScore > max) return { error: "The score after contribution cannot exceed the official maximum of " + max + "." };
-    const duplicate = FL.store.documents.some(function (other) {
-      if (other.id === doc.id || other.facultyId !== doc.facultyId || other.status !== "approved") return false;
+    let replaced = 0;
+    let duplicateIndicator = false;
+    FL.store.documents.forEach(function (other) {
+      if (other.id === doc.id || other.facultyId !== doc.facultyId || other.status !== "approved") return;
       const otherId = (other.review && other.review.indicatorId) || other.indicatorId;
-      return otherId === indicator.id;
+      if (otherId !== indicator.id) return;
+      duplicateIndicator = true;
+      if (other.review && typeof other.review.finalScore === "number") replaced = Math.max(replaced, other.review.finalScore);
     });
-    if (duplicate) return { error: "This indicator already has an approved score for this faculty member. Duplicate credit is not allowed." };
+    if (doc.status === "approved" && doc.review && doc.review.criterionId === found.criterion.id && typeof doc.review.finalScore === "number") {
+      replaced = Math.max(replaced, doc.review.finalScore);
+    }
     const totals = FL.documents.accumulated(doc);
-    const already = doc.status === "approved" && doc.review && doc.review.criterionId === found.criterion.id ? doc.review.finalScore : 0;
-    const room = FL.scoring.round(Math.max(0, found.criterion.maxPoints - (totals.criterion - already)));
+    const room = FL.scoring.round(Math.max(0, found.criterion.maxPoints - (totals.criterion - replaced)));
     if (finalScore > room) {
       return { error: "This score would exceed the criterion maximum of " + found.criterion.maxPoints + ". Approved points already accumulated: " + totals.criterion + "." };
     }
@@ -391,6 +420,7 @@ FL.documents = {
       found: found,
       percent: percent,
       finalScore: finalScore,
+      duplicateIndicator: duplicateIndicator,
       review: {
         indicatorId: indicator.id,
         kraId: found.kra.id,
@@ -430,12 +460,18 @@ FL.documents = {
     const assigned = scored.historical ? scored.basePoints : (doc.review && typeof doc.review.assignedScore === "number" ? doc.review.assignedScore : "");
     const preview = FL.documents.scorePreview(doc, assigned === "" ? NaN : Number(assigned));
     const editable = canDecide && doc.status !== "approved";
+    const sameIndicator = editable && FL.store.documents.some(function (other) {
+      if (other.id === doc.id || other.facultyId !== doc.facultyId || other.status !== "approved") return false;
+      const otherId = (other.review && other.review.indicatorId) || other.indicatorId;
+      return otherId === scored.indicator.id;
+    });
     const scoreField = editable ? `
       <div class="score-panel">
         <label class="field" for="assigned-score"><span>Assigned score</span>
           <input id="assigned-score" class="score-input score-input-lg" type="number" min="0" max="${FL.esc(String(officialMax))}" step="0.01" inputmode="decimal" value="${assigned === "" ? "" : FL.esc(String(assigned))}" placeholder="0">
         </label>
         <p class="note">Enter the score for this evidence. It cannot exceed the official maximum of ${FL.esc(String(officialMax))}.</p>
+        ${sameIndicator ? `<div class="alert alert-warning">Another approved document already uses this indicator. You can still approve this document. Only the highest score for this indicator counts in the faculty total.</div>` : ""}
         <div class="score-preview">
           <div><span>Official maximum</span><strong id="score-preview-max">${FL.esc(String(officialMax))}</strong></div>
           <div><span>Contribution</span><strong id="score-preview-percent">${preview.percent == null ? "—" : FL.esc(String(preview.percent)) + "%"}</strong></div>
@@ -513,9 +549,26 @@ FL.documents = {
         ${doc.feedback ? `<p>${FL.esc(doc.feedback)}</p>` : `<p>No reviewer feedback has been recorded.</p>`}
         <p class="meta">${doc.decidedAt ? "Recorded " + FL.esc(FL.formatWhen(doc.decidedAt)) : ""}</p>`;
     }
+    const scored = FL.scoring.scoreDocument(doc);
+    const officialMax = scored.historical ? scored.officialMax : (scored.indicator ? scored.indicator.maxPoints : null);
+    const assigned = scored.historical ? scored.basePoints : (doc.review && typeof doc.review.assignedScore === "number" ? doc.review.assignedScore : "");
+    const preview = FL.documents.scorePreview(doc, assigned === "" ? NaN : Number(assigned));
+    const scoreField = doc.status === "approved" || officialMax == null ? `
+      <p class="note">${doc.status === "approved" ? "This document already has an approved score." : "Match an Annex I indicator in Applicable DBM–CHED rule before assigning a score."}</p>` : `
+      <div class="score-panel">
+        <label class="field" for="decision-score"><span>Assigned score</span>
+          <input id="decision-score" class="score-input score-input-lg" type="number" min="0" max="${FL.esc(String(officialMax))}" step="0.01" inputmode="decimal" value="${assigned === "" ? "" : FL.esc(String(assigned))}" placeholder="0">
+        </label>
+        <p class="note">Official maximum ${FL.esc(String(officialMax))}. The assigned score cannot exceed that maximum.</p>
+        <div class="score-preview">
+          <div><span>Official maximum</span><strong>${FL.esc(String(officialMax))}</strong></div>
+          <div><span>Contribution</span><strong id="decision-preview-percent">${preview.percent == null ? "—" : FL.esc(String(preview.percent)) + "%"}</strong></div>
+          <div><span>Score after contribution</span><strong id="decision-preview-final">${preview.finalScore == null ? "—" : FL.esc(String(preview.finalScore))}</strong></div>
+        </div>
+      </div>`;
     return `
       <div class="card-head"><h2>Reviewer decision</h2></div>
-      <p class="note">Enter the assigned score in <a href="#scoring">KRA scoring</a>, then record remarks and approve, request a revision, or reject.</p>
+      ${scoreField}
       <label class="field" for="feedback"><span>Remarks</span>
         <textarea id="feedback" rows="5" placeholder="Justification for the assigned score, missing evidence, or the reason for rejection">${FL.esc(doc.feedback || doc.remarks || "")}</textarea>
       </label>
@@ -544,10 +597,10 @@ FL.documents = {
         error.textContent = "Match an Annex I indicator before approval.";
         return;
       }
-      const assignedInput = document.getElementById("assigned-score");
+      const assignedInput = document.getElementById("decision-score") || document.getElementById("assigned-score");
       const assigned = assignedInput ? Number(assignedInput.value) : NaN;
       if (!assignedInput) {
-        error.textContent = "Match an Annex I indicator and enter an assigned score in KRA scoring.";
+        error.textContent = "Match an Annex I indicator and enter an assigned score before approval.";
         return;
       }
       const award = FL.documents.award(doc, assigned);
@@ -565,9 +618,12 @@ FL.documents = {
         error.textContent = "A document with missing required fields is invalid and cannot be approved.";
         return;
       }
+      const body = award.duplicateIndicator
+        ? "<p>Approve this document and record its score? Another approved document already uses this indicator for this faculty member. The document can still be approved. Only the highest score for that indicator is counted in the faculty KRA total, so points are not double-credited.</p>"
+        : "<p>Approve this document and include its final score in the faculty KRA estimate? This remains an evaluation-support record.</p>";
       FL.ui.modal({
         title: "Approve document",
-        body: "<p>Approve this document and include its final score in the faculty KRA estimate? This remains an evaluation-support record.</p>",
+        body: body,
         confirmLabel: "Approve",
         onClose: function (ok) {
           if (!ok) return;

@@ -810,16 +810,6 @@ def update_document(document_id):
             conn.close()
             return json_error(message, 400)
         indicator_id = snapshot["indicatorId"]
-        duplicate = conn.execute(
-            """
-            SELECT public_id FROM documents
-            WHERE user_id = %s AND indicator_id = %s AND status = 'validated' AND public_id <> %s
-            """,
-            (row["user_id"], indicator_id, document_id),
-        ).fetchone()
-        if duplicate:
-            conn.close()
-            return json_error("This indicator already has an approved score for this faculty member.", 400)
         if row["file_hash"]:
             hashed = conn.execute(
                 """

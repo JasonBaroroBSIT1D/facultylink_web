@@ -122,17 +122,16 @@ FL.scoring = {
     const byId = {};
     kras.forEach(function (kra) { byId[kra.id] = kra; });
     const groupTotals = {};
+    const bestByIndicator = {};
 
     documents.forEach(function (doc) {
       if (doc.review && typeof doc.review.finalScore === "number" && doc.status === "approved") {
         const review = doc.review;
-        const kra = byId[review.kraId];
-        if (!kra) return;
-        const criterion = kra.criteria.find(function (item) { return item.id === review.criterionId; }) || kra.criteria[0];
-        if (!criterion) return;
-        criterion.earned = FL.scoring.round(criterion.earned + review.finalScore);
-        criterion.locked = FL.scoring.round(criterion.locked + review.finalScore);
-        criterion.documents.push({ id: doc.id, name: doc.name, points: review.finalScore });
+        const indicatorKey = review.indicatorId || doc.indicatorId || doc.id;
+        const current = bestByIndicator[indicatorKey];
+        if (!current || review.finalScore > current.review.finalScore) {
+          bestByIndicator[indicatorKey] = { doc: doc, review: review };
+        }
         return;
       }
       if (typeof doc.databasePoints === "number") {
@@ -160,6 +159,19 @@ FL.scoring = {
       points = FL.scoring.round(Math.min(points, roomInCriterion));
       criterion.earned = FL.scoring.round(criterion.earned + points);
       criterion.documents.push({ id: doc.id, name: doc.name, points: points });
+    });
+
+    Object.keys(bestByIndicator).forEach(function (indicatorKey) {
+      const entry = bestByIndicator[indicatorKey];
+      const review = entry.review;
+      const doc = entry.doc;
+      const kra = byId[review.kraId];
+      if (!kra) return;
+      const criterion = kra.criteria.find(function (item) { return item.id === review.criterionId; }) || kra.criteria[0];
+      if (!criterion) return;
+      criterion.earned = FL.scoring.round(criterion.earned + review.finalScore);
+      criterion.locked = FL.scoring.round(criterion.locked + review.finalScore);
+      criterion.documents.push({ id: doc.id, name: doc.name, points: review.finalScore });
     });
 
     kras.forEach(function (kra) {
