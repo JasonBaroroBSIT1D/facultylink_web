@@ -31,6 +31,27 @@ FL.scoring = {
   },
 
   scoreDocument(document) {
+    if (document.review && typeof document.review.finalScore === "number" && document.status === "approved") {
+      const review = document.review;
+      const found = review.indicatorId ? FL.rules.findIndicator(review.indicatorId) : null;
+      const validation = FL.validation.evaluate(document);
+      return {
+        kra: found ? found.kra : null,
+        criterion: found ? found.criterion : null,
+        indicator: found ? found.indicator : null,
+        basePoints: review.assignedScore,
+        contributionPercent: review.contributionPercent,
+        finalScore: review.finalScore,
+        officialMax: review.officialMax,
+        officialLabel: review.officialLabel || "",
+        historical: true,
+        countable: validation.duplicateStatus !== "duplicate",
+        rows: (document.contribution || []).map(function (row) {
+          return { author: row.author, percent: row.percent, subject: !!row.subject, computed: row.subject ? review.finalScore : null };
+        }),
+        validation: validation
+      };
+    }
     if (typeof document.databasePoints === "number") {
       const found = document.indicatorId ? FL.rules.findIndicator(document.indicatorId) : null;
       const validation = FL.validation.evaluate(document);
@@ -85,7 +106,7 @@ FL.scoring = {
     const documents = FL.store.documents.filter(function (doc) { return doc.facultyId === facultyId; });
     const kras = FL.rules.kras.map(function (kra) {
       const criteria = kra.criteria.map(function (criterion) {
-        return { id: criterion.id, name: criterion.name, maxPoints: criterion.maxPoints, bonus: !!criterion.bonus, earned: 0, documents: [] };
+        return { id: criterion.id, name: criterion.name, maxPoints: criterion.maxPoints, bonus: !!criterion.bonus, earned: 0, locked: 0, documents: [] };
       });
       return {
         id: kra.id,
@@ -103,6 +124,17 @@ FL.scoring = {
     const groupTotals = {};
 
     documents.forEach(function (doc) {
+      if (doc.review && typeof doc.review.finalScore === "number" && doc.status === "approved") {
+        const review = doc.review;
+        const kra = byId[review.kraId];
+        if (!kra) return;
+        const criterion = kra.criteria.find(function (item) { return item.id === review.criterionId; }) || kra.criteria[0];
+        if (!criterion) return;
+        criterion.earned = FL.scoring.round(criterion.earned + review.finalScore);
+        criterion.locked = FL.scoring.round(criterion.locked + review.finalScore);
+        criterion.documents.push({ id: doc.id, name: doc.name, points: review.finalScore });
+        return;
+      }
       if (typeof doc.databasePoints === "number") {
         if (doc.status !== "approved" || !doc.kraId || !byId[doc.kraId]) return;
         const kra = byId[doc.kraId];
@@ -131,14 +163,23 @@ FL.scoring = {
     });
 
     kras.forEach(function (kra) {
-      let regular = 0;
-      let bonus = 0;
+      let lockedRegular = 0;
+      let openRegular = 0;
+      let lockedBonus = 0;
+      let openBonus = 0;
       kra.criteria.forEach(function (criterion) {
-        if (criterion.bonus) bonus += criterion.earned;
-        else regular += criterion.earned;
+        const held = criterion.locked || 0;
+        const fresh = Math.max(0, criterion.earned - held);
+        if (criterion.bonus) {
+          lockedBonus += held;
+          openBonus += fresh;
+        } else {
+          lockedRegular += held;
+          openRegular += fresh;
+        }
       });
-      kra.earned = FL.scoring.round(Math.min(kra.maxPoints, regular));
-      kra.bonus = FL.scoring.round(Math.min(kra.bonusMax, bonus));
+      kra.earned = FL.scoring.round(lockedRegular + Math.min(Math.max(0, kra.maxPoints - lockedRegular), openRegular));
+      kra.bonus = FL.scoring.round(lockedBonus + Math.min(Math.max(0, kra.bonusMax - lockedBonus), openBonus));
     });
 
     const total = this.round(kras.reduce(function (sum, kra) { return sum + kra.earned + kra.bonus; }, 0));

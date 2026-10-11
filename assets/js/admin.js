@@ -187,7 +187,8 @@ FL.admin = {
     });
   },
 
-  renderKra: function (session) {
+  renderKra: function (session, view) {
+    const editable = !(view && view.readonly);
     const page = document.getElementById("page");
     const draft = FL.rules.scoreDraft();
     let activeKra = FL.rules.kras[0].id;
@@ -197,13 +198,13 @@ FL.admin = {
     page.innerHTML = `
       <div class="page-head"><div>
         <p class="eyebrow">${FL.esc(FL.rules.citation)}</p>
-        <h1>KRA Configuration</h1>
+        <h1>${editable ? "KRA Configuration" : "Official KRA Scoring Reference"}</h1>
+        ${editable ? "" : "<p class=\"lede\">These are the scores published from KRA Configuration. Reviewers can read them and cannot change them.</p>"}
       </div></div>
-      <details class="callout kra-source"><summary>Rule source</summary><p>Scores start from ${FL.esc(FL.rules.annex)} and can be changed here. Saved scores are what FacultyLink uses. ${FL.esc(FL.scoring.formula)}</p><p>${FL.rules.globalConditions.map(FL.esc).join(" ")}</p></details>
+      <details class="callout kra-source"><summary>Rule source</summary><p>${editable ? "Scores start from " + FL.esc(FL.rules.annex) + " and can be changed here. Saved scores are what FacultyLink uses. " + FL.esc(FL.scoring.formula) : "Published from " + FL.esc(FL.rules.annex) + ". " + FL.esc(FL.scoring.formula)}</p><p>${FL.rules.globalConditions.map(FL.esc).join(" ")}</p></details>
       <div class="toolbar kra-tools">
         <label class="search"><span class="sr-only">Search rules</span><input id="rule-search" type="search" placeholder="Search KRA, criterion, indicator, or evidence"></label>
-        <button class="btn btn-primary" id="save-scores" type="button">Save scores</button>
-        <button class="btn btn-ghost" id="reset-scores" type="button">Restore official scores</button>
+        ${editable ? "<button class=\"btn btn-primary\" id=\"save-scores\" type=\"button\">Save scores</button><button class=\"btn btn-ghost\" id=\"reset-scores\" type=\"button\">Restore official scores</button>" : ""}
         <div id="kra-tabs" class="kra-tabs" role="tablist"></div>
       </div>
       <p id="score-error" class="form-error" hidden></p>
@@ -264,16 +265,17 @@ FL.admin = {
           return `<article class="kra-fold">
             <div class="kra-fold-head">
               <button class="kra-toggle" type="button" data-toggle-criterion="${FL.esc(criterion.id)}" aria-expanded="${opened ? "true" : "false"}" aria-controls="fold-${FL.esc(criterion.id)}"><span class="mark" aria-hidden="true">${opened ? "▾" : "▸"}</span><span>${FL.esc(criterion.name)}</span><span class="kra-count">${item.indicators.length} indicator${item.indicators.length === 1 ? "" : "s"}</span></button>
-              <label class="score-cap">${criterion.bonus ? "Bonus maximum" : "Maximum"} ${scoreInput("criteria", criterion.id, "maxPoints", draft.criteria[criterion.id].maxPoints)}</label>
+              <label class="score-cap">${criterion.bonus ? "Bonus maximum" : "Maximum"} ${editable ? scoreInput("criteria", criterion.id, "maxPoints", draft.criteria[criterion.id].maxPoints) : "<strong>" + FL.esc(String(criterion.maxPoints)) + "</strong>"}</label>
             </div>
             <div class="kra-fold-body" id="fold-${FL.esc(criterion.id)}" ${opened ? "" : "hidden"}>
               <p class="sub">${FL.esc(criterion.description || kra.summary)}</p>
               <div class="kra-indicators">${item.indicators.map(function (indicator) {
                 const saved = draft.indicators[indicator.id];
-                let pointsCell = FL.esc(indicator.pointsLabel || "—");
-                if (saved && saved.multiplier !== undefined) pointsCell = `<span class="score-formula">OR ÷ 100 × ${scoreInput("indicators", indicator.id, "multiplier", saved.multiplier)}</span>`;
-                else if (saved && saved.points !== undefined) pointsCell = scoreInput("indicators", indicator.id, "points", saved.points);
-                const maxCell = saved ? scoreInput("indicators", indicator.id, "maxPoints", saved.maxPoints) : FL.esc(String(indicator.maxPoints));
+                let pointsCell = FL.esc(indicator.pointsLabel || (indicator.points == null ? "—" : String(indicator.points)));
+                let maxCell = FL.esc(String(indicator.maxPoints));
+                if (editable && saved && saved.multiplier !== undefined) pointsCell = `<span class="score-formula">OR ÷ 100 × ${scoreInput("indicators", indicator.id, "multiplier", saved.multiplier)}</span>`;
+                else if (editable && saved && saved.points !== undefined) pointsCell = scoreInput("indicators", indicator.id, "points", saved.points);
+                if (editable && saved) maxCell = scoreInput("indicators", indicator.id, "maxPoints", saved.maxPoints);
                 const indicatorStored = openIndicators[indicator.id];
                 const detailOpen = indicatorStored === true || (indicatorStored !== false && query && detailMatch(indicator, query));
                 const detail = detailText(indicator);
@@ -296,7 +298,7 @@ FL.admin = {
         return `<section class="kra-panel" role="tabpanel" id="panel-${FL.esc(kra.id)}" aria-labelledby="tab-${FL.esc(kra.id)}" ${hidden ? "hidden" : ""}>
           <div class="kra-banner">
             <div><h2>${FL.esc(kra.code)} — ${FL.esc(kra.name)}</h2><p class="sub">${FL.esc(kra.summary)}</p></div>
-            <label class="score-cap">KRA maximum ${scoreInput("kras", kra.id, "maxPoints", draft.kras[kra.id].maxPoints)}</label>
+            <label class="score-cap">KRA maximum ${editable ? scoreInput("kras", kra.id, "maxPoints", draft.kras[kra.id].maxPoints) : "<strong>" + FL.esc(String(kra.maxPoints)) + "</strong>"}</label>
           </div>
           ${folds || FL.ui.empty("No rules", "No indicator in this KRA matches the search.")}
         </section>`;
@@ -356,6 +358,10 @@ FL.admin = {
       return invalid ? null : copy;
     };
     document.getElementById("rule-search").addEventListener("input", draw);
+    if (!editable) {
+      draw();
+      return;
+    }
     document.getElementById("save-scores").addEventListener("click", function () {
       const settings = numericDraft();
       if (!settings) {
@@ -487,12 +493,135 @@ FL.admin = {
         FL.ui.toast(error.message || "Profile was not saved.", "danger");
       });
     });
+  },
+
+  scheduleId: "evaluation",
+  scheduleLabel: "Rank Upgrade and Reclassification",
+
+  scheduleToday: function () {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return now.getFullYear() + "-" + month + "-" + day;
+  },
+
+  scheduleVisibility: function (period) {
+    if (!period) return "draft";
+    if (period.visibility === "all" || period.visibility === "reviewers" || period.visibility === "faculty") return "all";
+    if (period.visibility === "draft") return "draft";
+    return period.published ? "all" : "draft";
+  },
+
+  scheduleStatus: function (period) {
+    const visibility = FL.admin.scheduleVisibility(period);
+    if (visibility === "draft" || !period.startDate || !period.endDate) return "draft";
+    const today = FL.admin.scheduleToday();
+    if (today < period.startDate) return "upcoming";
+    if (today > period.endDate) return "closed";
+    return "open";
+  },
+
+  scheduleAudienceLabel: function (period) {
+    return FL.admin.scheduleVisibility(period) === "all" ? "Reviewers and faculty" : "Not published";
+  },
+
+  scheduleCard: function (period, editable) {
+    const item = period || {
+      id: FL.admin.scheduleId,
+      label: FL.admin.scheduleLabel,
+      startDate: "",
+      endDate: "",
+      published: false,
+      visibility: "draft"
+    };
+    const status = FL.admin.scheduleStatus(item);
+    const visibility = FL.admin.scheduleVisibility(item);
+    if (!editable) {
+      return `<article class="card">
+        <div class="card-head"><h2>${FL.esc(FL.admin.scheduleLabel)}</h2>${FL.ui.statusBadge(status)}</div>
+        <dl class="facts">
+          <div><dt>Evaluation type</dt><dd>${FL.esc(FL.admin.scheduleLabel)}</dd></div>
+          <div><dt>Status</dt><dd>${FL.ui.statusBadge(status)}</dd></div>
+          <div><dt>Start date</dt><dd>${FL.esc(FL.formatWhen(item.startDate))}</dd></div>
+          <div><dt>End date</dt><dd>${FL.esc(FL.formatWhen(item.endDate))}</dd></div>
+          <div><dt>Visible to</dt><dd>${FL.esc(FL.admin.scheduleAudienceLabel(item))}</dd></div>
+        </dl>
+      </article>`;
+    }
+    return `<article class="card">
+      <div class="card-head"><h2>${FL.esc(FL.admin.scheduleLabel)}</h2>${FL.ui.statusBadge(status)}</div>
+      <div class="form-grid">
+        <label class="field"><span>Start date</span><input id="schedule-start" type="date" value="${FL.esc(item.startDate)}"></label>
+        <label class="field"><span>End date</span><input id="schedule-end" type="date" value="${FL.esc(item.endDate)}"></label>
+        <label class="field field-wide"><span>Visibility</span>
+          <select id="schedule-visibility">
+            <option value="draft"${visibility === "draft" ? " selected" : ""}>Draft — not published</option>
+            <option value="all"${visibility === "all" ? " selected" : ""}>Published — reviewers and faculty can view</option>
+          </select>
+        </label>
+      </div>
+    </article>`;
+  },
+
+  renderSchedule: function (session, view) {
+    const editable = !(view && view.readonly);
+    const periods = FL.store.evaluationPeriods || [];
+    const period = periods[0] || null;
+    const page = document.getElementById("page");
+    if (!editable && !period) {
+      page.innerHTML = `
+        <div class="page-head"><div>
+          <p class="eyebrow">Evaluation period</p>
+          <h1>Evaluation Schedule</h1>
+          <p class="lede">Published Rank Upgrade and Reclassification dates from the administrator.</p>
+        </div></div>
+        ${FL.ui.empty("No published schedule", "The administrator has not published the Rank Upgrade and Reclassification schedule yet.")}`;
+      return;
+    }
+    page.innerHTML = `
+      <div class="page-head"><div>
+        <p class="eyebrow">Evaluation period</p>
+        <h1>Evaluation Schedule</h1>
+        <p class="lede">${editable
+          ? "Set one Rank Upgrade and Reclassification period, then choose who can view it. Changing these dates does not change scores already recorded on documents."
+          : "This is the published Rank Upgrade and Reclassification schedule. Reviewers can read it and cannot change it."}</p>
+      </div></div>
+      ${editable ? `<form id="schedule-form">` : ""}
+        ${FL.admin.scheduleCard(period, editable)}
+        ${editable ? `<div class="form-row"><button class="btn btn-primary" type="submit">Save schedule</button></div></form>` : `<p class="note">Only an administrator can change these dates.</p>`}`;
+    if (!editable) return;
+    document.getElementById("schedule-form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      const visibility = document.getElementById("schedule-visibility").value;
+      const next = [{
+        id: FL.admin.scheduleId,
+        startDate: document.getElementById("schedule-start").value,
+        endDate: document.getElementById("schedule-end").value,
+        visibility: visibility,
+        published: visibility !== "draft"
+      }];
+      if (next[0].startDate && next[0].endDate && next[0].endDate < next[0].startDate) {
+        FL.ui.toast("Enter a start date on or before the end date before publishing.", "danger");
+        return;
+      }
+      if (next[0].published && (!next[0].startDate || !next[0].endDate)) {
+        FL.ui.toast("Enter a start date on or before the end date before publishing.", "danger");
+        return;
+      }
+      FL.store.saveEvaluationPeriods(next).then(function () {
+        FL.ui.toast("Evaluation schedule saved.", "ok");
+        FL.admin.renderSchedule(session);
+      }).catch(function (error) {
+        FL.ui.toast(error.message || "The schedule was not saved.", "danger");
+      });
+    });
   }
 };
 
 FL.pages["admin-dashboard"] = function () { FL.admin.renderDashboard(); };
 FL.pages["admin-reviewers"] = function (session) { FL.admin.renderReviewers(session); };
 FL.pages["admin-kra"] = function (session) { FL.admin.renderKra(session); };
+FL.pages["admin-schedule"] = function (session) { FL.admin.renderSchedule(session); };
 FL.pages["admin-reports"] = function () { FL.admin.renderReports(); };
 FL.pages["admin-profile"] = function (session) { FL.admin.renderProfile(session); };
 FL.pages["admin-notifications"] = function (session) {

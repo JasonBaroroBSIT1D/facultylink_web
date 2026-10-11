@@ -598,10 +598,10 @@ FL.rules = {
     }
   ],
   classification: [
-    { priority: 1, kraId: "kra2", label: "Research and Innovation", keywords: ["Journal", "ISSN", "Publications"], fields: "Title, keywords, text" },
-    { priority: 2, kraId: "kra1", label: "Instruction", keywords: ["teaching", "course", "instruction"], fields: "Title, keywords, text" },
-    { priority: 3, kraId: "kra3", label: "Extension", keywords: ["community", "outreach", "extension"], fields: "Title, keywords, text" },
-    { priority: 4, kraId: "kra4", label: "Professional Development", keywords: ["training", "seminar", "certificate"], fields: "Title, keywords, text" }
+    { priority: 1, kraId: "kra2", label: "KRA II — Research, Invention, and Creative Work", keywords: ["Journal", "ISSN", "Publications"], fields: "Title, keywords, text" },
+    { priority: 2, kraId: "kra1", label: "KRA I — Instruction", keywords: ["teaching", "course", "instruction"], fields: "Title, keywords, text" },
+    { priority: 3, kraId: "kra3", label: "KRA III — Extension", keywords: ["community", "outreach", "extension"], fields: "Title, keywords, text" },
+    { priority: 4, kraId: "kra4", label: "KRA IV — Professional Development", keywords: ["training", "seminar", "certificate"], fields: "Title, keywords, text" }
   ],
   validationRules: [
     { condition: "Missing fields (title, author, or date)", action: "Invalid" },

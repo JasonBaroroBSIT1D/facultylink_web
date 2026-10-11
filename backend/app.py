@@ -86,6 +86,8 @@ def init_db():
         conn.close()
         raise RuntimeError("PostgreSQL is missing tables: " + ", ".join(sorted(missing)))
     ensure_kra_settings(conn)
+    ensure_review_support(conn)
+    ensure_evaluation_periods(conn)
     conn.close()
 
 
@@ -188,6 +190,219 @@ def read_kra_settings(conn):
     return sanitize_kra_settings(payload) or {"kras": {}, "criteria": {}, "indicators": {}}
 
 
+def ensure_review_support(conn):
+    conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS indicator_id TEXT")
+    conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS reviewer_score NUMERIC")
+    conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS reviewer_remarks TEXT")
+    conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS review_snapshot TEXT")
+    conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS decided_at TEXT")
+    conn.execute("ALTER TABLE faculty_profiles ADD COLUMN IF NOT EXISTS reviewer_user_id INTEGER")
+    sole = sole_reviewer_id(conn)
+    if sole is not None:
+        conn.execute(
+            "UPDATE faculty_profiles SET reviewer_user_id = %s WHERE reviewer_user_id IS NULL",
+            (sole,),
+        )
+    conn.commit()
+
+
+PERIOD_ID = "evaluation"
+PERIOD_LABEL = "Rank Upgrade and Reclassification"
+LEGACY_PERIOD_IDS = ("rank-upgrade", "reclassification")
+VISIBILITY_OPTIONS = ("draft", "all")
+
+
+def ensure_evaluation_periods(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_periods (
+            id TEXT PRIMARY KEY,
+            start_date TEXT NOT NULL DEFAULT '',
+            end_date TEXT NOT NULL DEFAULT '',
+            published BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("ALTER TABLE evaluation_periods ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'draft'")
+    now = datetime.now().isoformat(sep=" ", timespec="seconds")
+    conn.execute(
+        """
+        INSERT INTO evaluation_periods (id, start_date, end_date, published, visibility, updated_at)
+        VALUES (%s, '', '', FALSE, 'draft', %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (PERIOD_ID, now),
+    )
+    conn.execute(
+        """
+        UPDATE evaluation_periods
+        SET visibility = CASE
+            WHEN published OR visibility IN ('reviewers', 'faculty', 'all') THEN 'all'
+            ELSE 'draft'
+        END
+        WHERE id = %s
+        """,
+        (PERIOD_ID,),
+    )
+    legacy = {
+        row["id"]: row
+        for row in conn.execute(
+            "SELECT * FROM evaluation_periods WHERE id = ANY(%s)",
+            (list(LEGACY_PERIOD_IDS),),
+        ).fetchall()
+    }
+    current = conn.execute("SELECT * FROM evaluation_periods WHERE id = %s", (PERIOD_ID,)).fetchone()
+    if current and not current["start_date"] and not current["end_date"] and legacy:
+        donor = None
+        for period_id in LEGACY_PERIOD_IDS:
+            row = legacy.get(period_id)
+            if not row:
+                continue
+            if row["published"] or row["start_date"] or row["end_date"]:
+                donor = row
+                if row["published"]:
+                    break
+        if donor:
+            visibility = donor.get("visibility") or ("all" if donor["published"] else "draft")
+            if visibility in ("reviewers", "faculty"):
+                visibility = "all"
+            if visibility not in VISIBILITY_OPTIONS:
+                visibility = "all" if donor["published"] else "draft"
+            conn.execute(
+                """
+                UPDATE evaluation_periods
+                SET start_date = %s, end_date = %s, published = %s, visibility = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (
+                    donor["start_date"] or "",
+                    donor["end_date"] or "",
+                    bool(donor["published"]),
+                    visibility,
+                    now,
+                    PERIOD_ID,
+                ),
+            )
+    conn.execute("DELETE FROM evaluation_periods WHERE id = ANY(%s)", (list(LEGACY_PERIOD_IDS),))
+    conn.commit()
+
+
+def valid_period_date(value):
+    if value in (None, ""):
+        return ""
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return text
+
+
+def sanitize_visibility(value, published=None):
+    text = str(value or "").strip().lower()
+    if text in ("reviewers", "faculty"):
+        text = "all"
+    if text in VISIBILITY_OPTIONS:
+        return text
+    if published is True:
+        return "all"
+    if published is False:
+        return "draft"
+    return None
+
+
+def sanitize_evaluation_periods(payload):
+    items = payload.get("periods") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or len(items) != 1:
+        return None
+    item = items[0]
+    if not isinstance(item, dict):
+        return None
+    period_id = str(item.get("id") or "")
+    if period_id not in (PERIOD_ID,) + LEGACY_PERIOD_IDS:
+        return None
+    start = valid_period_date(item.get("startDate"))
+    end = valid_period_date(item.get("endDate"))
+    if start is None or end is None:
+        return None
+    if start and end and end < start:
+        return None
+    visibility = sanitize_visibility(item.get("visibility"), item.get("published"))
+    if visibility is None:
+        return None
+    published = visibility != "draft"
+    if published and (not start or not end):
+        return None
+    return [{
+        "id": PERIOD_ID,
+        "startDate": start,
+        "endDate": end,
+        "published": published,
+        "visibility": visibility,
+    }]
+
+
+def period_visible_to(period, role):
+    visibility = period.get("visibility") or ("all" if period.get("published") else "draft")
+    if visibility in ("reviewers", "faculty"):
+        visibility = "all"
+    if visibility == "draft":
+        return False
+    if role in ("admin", "reviewer", "faculty"):
+        return visibility == "all"
+    return False
+
+
+def read_evaluation_periods(conn):
+    ensure_evaluation_periods(conn)
+    row = conn.execute("SELECT * FROM evaluation_periods WHERE id = %s", (PERIOD_ID,)).fetchone()
+    visibility = (row["visibility"] if row else "draft") or "draft"
+    if visibility in ("reviewers", "faculty"):
+        visibility = "all"
+    if visibility not in VISIBILITY_OPTIONS:
+        visibility = "all" if row and row["published"] else "draft"
+    published = visibility != "draft"
+    return [{
+        "id": PERIOD_ID,
+        "label": PERIOD_LABEL,
+        "startDate": (row["start_date"] if row else "") or "",
+        "endDate": (row["end_date"] if row else "") or "",
+        "published": published,
+        "visibility": visibility,
+        "updatedAt": (row["updated_at"] if row else "") or "",
+    }]
+
+
+def write_evaluation_periods(conn, periods):
+    ensure_evaluation_periods(conn)
+    now = datetime.now().isoformat(sep=" ", timespec="seconds")
+    for period in periods:
+        conn.execute(
+            """
+            INSERT INTO evaluation_periods (id, start_date, end_date, published, visibility, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                start_date = EXCLUDED.start_date,
+                end_date = EXCLUDED.end_date,
+                published = EXCLUDED.published,
+                visibility = EXCLUDED.visibility,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                PERIOD_ID,
+                period["startDate"],
+                period["endDate"],
+                period["published"],
+                period["visibility"],
+                now,
+            ),
+        )
+    conn.execute("DELETE FROM evaluation_periods WHERE id = ANY(%s)", (list(LEGACY_PERIOD_IDS),))
+
+
 def write_kra_settings(conn, settings):
     ensure_kra_settings(conn)
     conn.execute(
@@ -242,7 +457,7 @@ def faculty_records(conn):
     ).fetchall()
     fallback = sole_reviewer_id(conn)
     for row in rows:
-        reviewer_id = fallback
+        reviewer_id = row.get("reviewer_user_id") or fallback
         people.append({
             "id": str(row["user_id"]),
             "employeeNo": row["faculty_id"],
@@ -262,6 +477,16 @@ def faculty_records(conn):
     return people
 
 
+def load_review(raw):
+    if not raw:
+        return None
+    try:
+        review = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return review if isinstance(review, dict) else None
+
+
 def document_record(row):
     submitted = str(row["submitted_at"] or "")[:10]
     author = row["author"] or ""
@@ -270,6 +495,8 @@ def document_record(row):
     if not isinstance(info, str):
         info = "" if info is None else str(info)
     text = row["extracted_text"] or row["validation_result"] or row["title"]
+    stored_indicator = row.get("indicator_id") or ""
+    score = row.get("reviewer_score")
     record = {
         "id": row["public_id"],
         "facultyId": str(row["user_id"]),
@@ -278,7 +505,7 @@ def document_record(row):
         "fileType": "PDF",
         "fileSize": "On file",
         "pages": 1,
-        "indicatorId": KRA_INDICATORS.get(kra),
+        "indicatorId": stored_indicator or KRA_INDICATORS.get(kra),
         "kraId": KRA_IDS.get(kra, ""),
         "reviewerId": "",
         "dateSubmitted": submitted,
@@ -295,8 +522,12 @@ def document_record(row):
             "content": " ".join(part for part in [text, info, kra] if part),
         },
         "feedback": row["reviewer_feedback"] or "",
-        "decidedAt": None,
+        "remarks": row.get("reviewer_remarks") or "",
+        "review": load_review(row.get("review_snapshot")),
+        "decidedAt": row.get("decided_at"),
     }
+    if score is not None:
+        record["reviewerScore"] = float(score)
     return record
 
 
@@ -329,9 +560,12 @@ def audit_record(row):
 def visible_faculty_ids(conn, user):
     if user["role"] == "admin":
         return None
-    if sole_reviewer_id(conn) != user["id"] and user["role"] != "reviewer":
+    if user["role"] != "reviewer":
         return set()
-    rows = conn.execute("SELECT user_id FROM faculty_profiles").fetchall()
+    rows = conn.execute(
+        "SELECT user_id FROM faculty_profiles WHERE reviewer_user_id = %s",
+        (user["id"],),
+    ).fetchall()
     return {row["user_id"] for row in rows}
 
 
@@ -403,6 +637,14 @@ def state():
     )]
     allowed = visible_faculty_ids(conn, user)
     kra_settings = read_kra_settings(conn)
+    evaluation_periods = read_evaluation_periods(conn)
+    if user["role"] != "admin":
+        evaluation_periods = [
+            period for period in evaluation_periods if period_visible_to(period, user["role"])
+        ]
+    reviewer_by_faculty = {person["id"]: person["reviewerId"] for person in faculty}
+    for doc in documents:
+        doc["reviewerId"] = reviewer_by_faculty.get(doc["facultyId"], "")
     conn.close()
     if allowed is not None:
         faculty = [person for person in faculty if int(person["id"]) in allowed]
@@ -414,6 +656,7 @@ def state():
         "notifications": notifications,
         "audit": audit,
         "kraSettings": kra_settings,
+        "evaluationPeriods": evaluation_periods,
     })
 
 
@@ -442,6 +685,37 @@ def update_kra_settings():
     return jsonify({"ok": True, "kraSettings": settings})
 
 
+@app.put("/api/evaluation-periods")
+def update_evaluation_periods():
+    conn, user = require_user()
+    if user["role"] != "admin":
+        conn.close()
+        return json_error("Only an administrator can change evaluation schedules.", 403)
+    periods = sanitize_evaluation_periods(request.get_json(silent=True) or {})
+    if periods is None:
+        conn.close()
+        return json_error("Enter a start date on or before the end date. Publish a schedule only after both dates are set.", 400)
+    write_evaluation_periods(conn, periods)
+    period = periods[0]
+    if period["visibility"] == "draft":
+        detail = "Saved the Rank Upgrade and Reclassification schedule as a draft."
+    else:
+        detail = "Published the Rank Upgrade and Reclassification schedule for reviewers and faculty."
+    conn.execute(
+        "INSERT INTO audit_logs (actor_email, action, detail, created_at) VALUES (%s, %s, %s, %s)",
+        (
+            user["email"],
+            "Updated evaluation schedule",
+            detail,
+            datetime.now().isoformat(sep=" ", timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    saved = read_evaluation_periods(conn)
+    conn.close()
+    return jsonify({"ok": True, "evaluationPeriods": saved})
+
+
 @app.patch("/api/profile")
 def update_profile():
     conn, user = require_user()
@@ -457,6 +731,46 @@ def update_profile():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+def awarded_review(incoming, kra_settings):
+    review = incoming.get("review")
+    if not isinstance(review, dict):
+        return None, "Match an indicator and assign a score before approval."
+    indicator_id = str(review.get("indicatorId") or incoming.get("indicatorId") or "")
+    if not re.fullmatch(r"[a-z0-9-]{1,80}", indicator_id):
+        return None, "Match an Annex I indicator before approval."
+    official_max = clean_score(review.get("officialMax"))
+    assigned = clean_score(review.get("assignedScore"))
+    percent = clean_score(review.get("contributionPercent"))
+    if official_max is None or assigned is None or percent is None or percent > 100:
+        return None, "Enter a score from 0 through the official maximum."
+    published = (kra_settings.get("indicators") or {}).get(indicator_id) or {}
+    if "maxPoints" in published and abs(published["maxPoints"] - official_max) > 0.001:
+        return None, "The official maximum does not match the published KRA configuration."
+    if assigned > official_max:
+        return None, "The assigned score cannot exceed the official maximum."
+    final_score = round(assigned * (percent / 100.0), 2)
+    if final_score > official_max:
+        return None, "The score after contribution cannot exceed the official maximum."
+    official_points = review.get("officialPoints")
+    if official_points is not None:
+        official_points = clean_score(official_points)
+        if official_points is None:
+            return None, "Enter a score from 0 through the official maximum."
+    snapshot = {
+        "indicatorId": indicator_id,
+        "kraId": str(review.get("kraId") or "")[:40],
+        "criterionId": str(review.get("criterionId") or "")[:80],
+        "officialPoints": official_points,
+        "officialLabel": str(review.get("officialLabel") or "")[:120],
+        "officialMax": official_max,
+        "contributionPercent": percent,
+        "assignedScore": assigned,
+        "finalScore": final_score,
+        "capturedAt": datetime.now().isoformat(sep=" ", timespec="seconds"),
+    }
+    return snapshot, None
 
 
 @app.put("/api/documents/<document_id>")
@@ -475,17 +789,84 @@ def update_document(document_id):
     feedback = incoming.get("feedback")
     if feedback is None:
         feedback = row["reviewer_feedback"]
+    remarks = incoming.get("remarks")
+    if remarks is None:
+        remarks = feedback
+    indicator_id = row.get("indicator_id")
+    if "indicatorId" in incoming:
+        requested = incoming.get("indicatorId") or ""
+        if requested and not re.fullmatch(r"[a-z0-9-]{1,80}", str(requested)):
+            conn.close()
+            return json_error("That indicator is not part of the official KRA configuration.", 400)
+        indicator_id = requested or None
+    snapshot_raw = row.get("review_snapshot")
+    reviewer_score = row.get("reviewer_score")
+    decided_at = row.get("decided_at")
+    if status == "validated":
+        if str(feedback or "").strip() == "" and str(remarks or "").strip() == "":
+            feedback = feedback or ""
+        snapshot, message = awarded_review(incoming, read_kra_settings(conn))
+        if message:
+            conn.close()
+            return json_error(message, 400)
+        indicator_id = snapshot["indicatorId"]
+        duplicate = conn.execute(
+            """
+            SELECT public_id FROM documents
+            WHERE user_id = %s AND indicator_id = %s AND status = 'validated' AND public_id <> %s
+            """,
+            (row["user_id"], indicator_id, document_id),
+        ).fetchone()
+        if duplicate:
+            conn.close()
+            return json_error("This indicator already has an approved score for this faculty member.", 400)
+        if row["file_hash"]:
+            hashed = conn.execute(
+                """
+                SELECT public_id FROM documents
+                WHERE file_hash = %s AND status = 'validated' AND public_id <> %s
+                """,
+                (row["file_hash"], document_id),
+            ).fetchone()
+            if hashed:
+                conn.close()
+                return json_error("A duplicate document cannot be approved.", 400)
+        snapshot_raw = json.dumps(snapshot)
+        reviewer_score = snapshot["finalScore"]
+        decided_at = snapshot["capturedAt"]
+    elif status in ("rejected", "needsRevision"):
+        if not str(feedback or "").strip():
+            conn.close()
+            return json_error("A reason is required when rejecting a document." if status == "rejected" else "Remarks are required when requesting a revision.", 400)
+        decided_at = datetime.now().isoformat(sep=" ", timespec="seconds")
     conn.execute(
         """
         UPDATE documents
-        SET status = %s, reviewer_feedback = %s, flagged_for_review = %s
+        SET status = %s, reviewer_feedback = %s, reviewer_remarks = %s, flagged_for_review = %s,
+            indicator_id = %s, reviewer_score = %s, review_snapshot = %s, decided_at = %s
         WHERE public_id = %s
         """,
-        (status, feedback, status in ("pendingReview", "needsRevision"), document_id),
+        (
+            status,
+            feedback,
+            remarks,
+            status in ("pendingReview", "needsRevision"),
+            indicator_id,
+            reviewer_score,
+            snapshot_raw,
+            decided_at,
+            document_id,
+        ),
     )
     conn.commit()
     updated = conn.execute("SELECT * FROM documents WHERE public_id = %s", (document_id,)).fetchone()
     body = document_record(updated)
+    faculty = conn.execute(
+        "SELECT reviewer_user_id FROM faculty_profiles WHERE user_id = %s",
+        (updated["user_id"],),
+    ).fetchone()
+    if faculty and faculty["reviewer_user_id"]:
+        body["reviewerId"] = str(faculty["reviewer_user_id"])
     conn.close()
     return jsonify(body)
 
@@ -508,6 +889,11 @@ def assign_reviewer(faculty_id):
     if not reviewer or not person:
         conn.close()
         return json_error("Faculty or reviewer was not found.", 404)
+    conn.execute(
+        "UPDATE faculty_profiles SET reviewer_user_id = %s WHERE user_id = %s",
+        (reviewer_id, faculty_user_id),
+    )
+    conn.commit()
     conn.close()
     return jsonify({"ok": True, "reviewerId": reviewer_id, "facultyId": faculty_user_id})
 

@@ -8,6 +8,7 @@ FL.nav = {
     { id: "admin-documents", href: "documents.html", label: "Documents" },
     { id: "admin-reviewers", href: "reviewers.html", label: "Reviewers" },
     { id: "admin-kra", href: "kra-configuration.html", label: "KRA Configuration" },
+    { id: "admin-schedule", href: "evaluation-schedule.html", label: "Evaluation Schedule" },
     { id: "admin-reports", href: "reports.html", label: "Reports" },
     { id: "admin-notifications", href: "notifications.html", label: "Notifications" },
     { id: "admin-audit", href: "audit-log.html", label: "Audit Log" },
@@ -18,6 +19,8 @@ FL.nav = {
     { id: "reviewer-queue", href: "review-queue.html", label: "Review Queue" },
     { id: "reviewer-documents", href: "documents.html", label: "Documents" },
     { id: "reviewer-faculty", href: "assigned-faculty.html", label: "Assigned Faculty" },
+    { id: "reviewer-kra", href: "kra-reference.html", label: "Official KRA Scoring Reference" },
+    { id: "reviewer-schedule", href: "evaluation-schedule.html", label: "Evaluation Schedule" },
     { id: "reviewer-notifications", href: "notifications.html", label: "Notifications" },
     { id: "reviewer-profile", href: "profile.html", label: "Profile" }
   ]
@@ -31,6 +34,7 @@ FL.crumbs = {
   "admin-document-view": ["Administrator", "Documents", "Document Review"],
   "admin-reviewers": ["Administrator", "Reviewers"],
   "admin-kra": ["Administrator", "KRA Configuration"],
+  "admin-schedule": ["Administrator", "Evaluation Schedule"],
   "admin-reports": ["Administrator", "Reports & Analytics"],
   "admin-notifications": ["Administrator", "Notifications"],
   "admin-audit": ["Administrator", "Audit Log"],
@@ -41,6 +45,8 @@ FL.crumbs = {
   "reviewer-review": ["Reviewer", "Review Queue", "Document Review"],
   "reviewer-faculty": ["Reviewer", "Assigned Faculty"],
   "reviewer-faculty-detail": ["Reviewer", "Assigned Faculty", "Faculty Detail"],
+  "reviewer-kra": ["Reviewer", "Official KRA Scoring Reference"],
+  "reviewer-schedule": ["Reviewer", "Evaluation Schedule"],
   "reviewer-notifications": ["Reviewer", "Notifications"],
   "reviewer-profile": ["Reviewer", "My Profile"]
 };

@@ -36,6 +36,14 @@ FL.reviewer = {
           }).join("")}
         </tbody></table></div>` : FL.ui.empty("Empty review queue", "No assigned document is waiting for validation.")}
       </article>
+      <article class="card">
+        <div class="card-head"><h2>Evaluation schedule</h2><a href="evaluation-schedule.html">Open schedule</a></div>
+        ${(FL.store.evaluationPeriods || []).length ? `<div class="table-wrap"><table class="data"><thead><tr><th>Evaluation type</th><th>Start date</th><th>End date</th><th>Status</th></tr></thead><tbody>
+          ${(FL.store.evaluationPeriods || []).map(function (period) {
+            return `<tr><td>${FL.esc(period.label || FL.admin.scheduleLabel)}</td><td>${FL.esc(FL.formatWhen(period.startDate))}</td><td>${FL.esc(FL.formatWhen(period.endDate))}</td><td>${FL.ui.statusBadge(FL.admin.scheduleStatus(period))}</td></tr>`;
+          }).join("")}
+        </tbody></table></div>` : FL.ui.empty("No published schedule", "The administrator has not published the Rank Upgrade and Reclassification schedule yet.")}
+      </article>
       <div class="split">
         <article class="card">
           <div class="card-head"><h2>Assigned faculty</h2><a href="assigned-faculty.html">Open list</a></div>
@@ -85,6 +93,8 @@ FL.reviewer = {
   }
 };
 
+FL.pages["reviewer-kra"] = function (session) { FL.admin.renderKra(session, { readonly: true }); };
+FL.pages["reviewer-schedule"] = function (session) { FL.admin.renderSchedule(session, { readonly: true }); };
 FL.pages["reviewer-dashboard"] = function (session) { FL.reviewer.renderDashboard(session); };
 FL.pages["reviewer-profile"] = function (session) { FL.reviewer.renderProfile(session); };
 FL.pages["reviewer-notifications"] = function (session) {

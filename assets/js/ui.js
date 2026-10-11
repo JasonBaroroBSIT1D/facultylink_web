@@ -64,7 +64,11 @@ FL.ui = {
       missing: ["invalid", "Missing"],
       "On track": ["valid", "On track"],
       "Needs attention": ["pending", "Needs attention"],
-      Incomplete: ["invalid", "Incomplete"]
+      Incomplete: ["invalid", "Incomplete"],
+      open: ["valid", "Open"],
+      upcoming: ["info", "Upcoming"],
+      closed: ["info", "Closed"],
+      draft: ["pending", "Not published"]
     };
     const item = map[status] || ["info", status || "—"];
     return FL.ui.badge(item[0], item[1]);

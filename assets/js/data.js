@@ -49,6 +49,7 @@ FL.store = {
   notifications: [],
   audit: [],
   users: [],
+  evaluationPeriods: [],
 
   load: function () {
     const store = this;
@@ -58,6 +59,7 @@ FL.store = {
       store.users = data.users || [];
       store.notifications = data.notifications || [];
       store.audit = data.audit || [];
+      store.evaluationPeriods = data.evaluationPeriods || [];
       if (FL.rules.applySettings) FL.rules.applySettings(data.kraSettings || {});
     });
   },
@@ -83,7 +85,12 @@ FL.store = {
   },
 
   saveDocument: function (doc) {
-    return FL.api.send("PUT", "/api/documents/" + encodeURIComponent(doc.id), doc);
+    return FL.api.send("PUT", "/api/documents/" + encodeURIComponent(doc.id), doc).then(function (saved) {
+      if (saved && typeof saved === "object") {
+        Object.keys(saved).forEach(function (key) { doc[key] = saved[key]; });
+      }
+      return saved;
+    });
   },
 
   assignReviewer: function (facultyId, reviewerId) {
@@ -106,6 +113,14 @@ FL.store = {
   saveKraSettings: function (settings) {
     return FL.api.send("PUT", "/api/kra-settings", settings).then(function (data) {
       FL.rules.applySettings(data.kraSettings || settings);
+      return data;
+    });
+  },
+
+  saveEvaluationPeriods: function (periods) {
+    const store = this;
+    return FL.api.send("PUT", "/api/evaluation-periods", { periods: periods }).then(function (data) {
+      store.evaluationPeriods = data.evaluationPeriods || periods;
       return data;
     });
   },
